@@ -1,7 +1,7 @@
 {
   "id": "dev.twilitrealm.secondary_inventory_wheel",
-  "name": "Secondary Inventory Wheel",
-  "version": "1.0.0",
-  "author": "Twilit Realm",
-  "description": "Adds an independent secondary inventory wheel, Hawk Grass for calling a hawk, and a Goron Tunic that lets Link sink through lava."
+  "name": "RobinWheelAndTweaks",
+  "version": "1.0.1",
+  "author": "RobinTheSoundsmith",
+  "description": "Adds a secondary inventory wheel, Hawk Grass, configurable Goron Tunic lava walking, and Hawk attack options."
 }

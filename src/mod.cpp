@@ -10,10 +10,9 @@
 #include "JSystem/J2DGraph/J2DTextBox.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
 #include "JSystem/JUtility/JUTNameTab.h"
-#include "Z2AudioLib/Z2AudioMgr.h"
-#include "Z2AudioLib/Z2SeMgr.h"
 #include "d/actor/d_a_alink.h"
 #include "d/actor/d_a_npc_tk.h"
+#include "SSystem/SComponent/c_cc_d.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_lib.h"
 #include "d/d_meter2_draw.h"
@@ -52,9 +51,14 @@ constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 1;
 constexpr f32 kSecondaryIconScale = 0.55f;
 constexpr f32 kSecondaryCursorScale = 0.5f;
 constexpr u8 kGoronTunicItem = dItemNo_WEAR_KOKIRI_e;
+constexpr u32 kHawkAttackType =
+    AT_TYPE_THROW_OBJ | AT_TYPE_NORMAL_SWORD | AT_TYPE_BOMB;
 constexpr unsigned int kLavaReturnDelayFrames = 5 * 30;
+constexpr unsigned int kHawkIdleDespawnDelayFrames = 5 * 30;
 
 ConfigVarHandle g_wheelOpenDirection = 0;
+ConfigVarHandle g_infiniteLavaWalk = 0;
+ConfigVarHandle g_hawkOneShotDamage = 0;
 dMenu_Ring_c* g_secondaryRing = nullptr;
 bool g_openingSecondaryRing = false;
 bool g_goronTunicEquipped = false;
@@ -74,10 +78,9 @@ u8 g_pendingHawkGrassButton = 0;
 bool g_hawkGrassPhaseRequested = false;
 bool g_hawkGrassArchiveLoaded = false;
 fpc_ProcID g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
-bool g_spawnedHawkAwayRequested = false;
-bool g_spawnedHawkAwayStarted = false;
-u32 g_manualHawkGrassSoundId = 0xFFFFFFFF;
-bool g_suppressHawkGrassEcho = false;
+bool g_spawnedHawkAttackSeen = false;
+bool g_spawnedHawkReturnSeen = false;
+unsigned int g_spawnedHawkIdleFrames = 0;
 
 std::array<u8, MAX_ITEM_SLOTS> g_secondarySlots = [] {
     std::array<u8, MAX_ITEM_SLOTS> slots{};
@@ -107,6 +110,22 @@ bool wheelOpensDown() {
 
 bool mapOpensDown() {
     return !wheelOpensDown();
+}
+
+bool get_bool_option(ConfigVarHandle handle, bool fallback) {
+    bool value = fallback;
+    if (handle == 0 || svc_config->get_bool(mod_ctx, handle, &value) != MOD_OK) {
+        return fallback;
+    }
+    return value;
+}
+
+bool infiniteLavaWalkEnabled() {
+    return get_bool_option(g_infiniteLavaWalk, false);
+}
+
+bool hawkOneShotDamageEnabled() {
+    return get_bool_option(g_hawkOneShotDamage, false);
 }
 
 bool isSecondaryRing(const dMenu_Ring_c* ring) {
@@ -225,7 +244,13 @@ bool secondaryHawkGrassAssigned(int button) {
 }
 
 void spawn_hawk_for_grass(daAlink_c* alink) {
-    if (fopAcM_SearchByName(fpcNm_NPC_TK_e) != nullptr) {
+    auto* existingHawk = static_cast<daNPC_TK_c*>(fopAcM_SearchByName(fpcNm_NPC_TK_e));
+    if (existingHawk != nullptr) {
+        g_spawnedHawkId = fopAcM_GetID(existingHawk);
+        g_spawnedHawkAttackSeen = false;
+        g_spawnedHawkReturnSeen = false;
+        g_spawnedHawkIdleFrames = 0;
+        svc_log->info(mod_ctx, "Tracking Hawk selected by modded Hawk Grass");
         return;
     }
 
@@ -238,45 +263,11 @@ void spawn_hawk_for_grass(daAlink_c* alink) {
         svc_log->error(mod_ctx, "Failed to create Hawk actor for Hawk Grass");
     } else {
         g_spawnedHawkId = hawkId;
-        g_spawnedHawkAwayRequested = false;
-        g_spawnedHawkAwayStarted = false;
+        g_spawnedHawkAttackSeen = false;
+        g_spawnedHawkReturnSeen = false;
+        g_spawnedHawkIdleFrames = 0;
         svc_log->info(mod_ctx, "Created Hawk actor for Hawk Grass");
     }
-}
-
-bool start_hawk_grass_sound(u32 soundId, const cXyz* position, int roomNo) {
-    auto* audio = Z2GetAudioMgr();
-    if (audio == nullptr) {
-        svc_log->error(mod_ctx, "Dusklight audio manager is unavailable for Hawk Grass sound");
-        return false;
-    }
-
-    g_manualHawkGrassSoundId = soundId;
-    const bool started = audio->seStart(soundId, position, 0, dComIfGp_getReverb(roomNo),
-        1.0f, 1.0f, -1.0f, -1.0f, 0);
-    g_manualHawkGrassSoundId = 0xFFFFFFFF;
-
-    if (!started) {
-        svc_log->error(mod_ctx, soundId == Z2SE_PLAY_REED_TOBIKUSA ?
-            "Dusklight rejected the Hawk Grass reed sound" :
-            "Dusklight rejected the Hawk Grass echo sound");
-    }
-
-    return started;
-}
-
-HookAction play_hawk_grass_reed(ModContext*, void* args, void*, void*) {
-    auto* alink = mods::arg<daAlink_c*>(args, 0);
-    const u32 soundId = mods::arg<u32>(args, 1);
-    if (alink == nullptr || soundId != Z2SE_PLAY_REED_TOBIKUSA ||
-        alink->mProcID != daAlink_c::PROC_GRASS_WHISTLE_WAIT ||
-        alink->field_0x3198 != 0x100 || !secondaryHawkGrassAssigned(alink->mSelectItemId))
-    {
-        return HOOK_CONTINUE;
-    }
-
-    start_hawk_grass_sound(soundId, &alink->current.pos, fopAcM_GetRoomNo(alink));
-    return HOOK_SKIP_ORIGINAL;
 }
 
 void spawn_hawk_after_grass_sound(ModContext*, void* args, void*, void*) {
@@ -292,63 +283,6 @@ void spawn_hawk_after_grass_sound(ModContext*, void* args, void*, void*) {
     spawn_hawk_for_grass(alink);
 }
 
-HookAction suppress_native_hawk_echo(ModContext*, void* args, void*, void*) {
-    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
-    const int perchAction = mods::arg<int>(args, 1);
-    g_suppressHawkGrassEcho = hawk != nullptr &&
-        fopAcM_GetID(hawk) == g_spawnedHawkId && perchAction == 1 &&
-        hawk->field_0x6b4 == 150;
-    return HOOK_CONTINUE;
-}
-
-void play_hawk_grass_echo(ModContext*, void* args, void*, void*) {
-    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
-    const bool playEcho = g_suppressHawkGrassEcho;
-    g_suppressHawkGrassEcho = false;
-    if (playEcho && hawk != nullptr) {
-        start_hawk_grass_sound(Z2SE_TOBIKUSA_ECHO, &hawk->current.pos,
-            fopAcM_GetRoomNo(hawk));
-    }
-}
-
-HookAction handle_hawk_grass_culling(ModContext*, void* args, void* retval, void*) {
-    const u32 soundId = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
-    if (soundId == g_manualHawkGrassSoundId) {
-        *static_cast<bool*>(retval) = false;
-        return HOOK_SKIP_ORIGINAL;
-    }
-
-    if (soundId == Z2SE_TOBIKUSA_ECHO && g_suppressHawkGrassEcho) {
-        *static_cast<bool*>(retval) = true;
-        return HOOK_SKIP_ORIGINAL;
-    }
-
-    return HOOK_CONTINUE;
-}
-
-void log_hawk_grass_sound_culling(ModContext*, void* args, void* retval, void*) {
-    const u32 soundId = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
-    if (soundId != Z2SE_PLAY_REED_TOBIKUSA && soundId != Z2SE_TOBIKUSA_ECHO) {
-        return;
-    }
-
-    const bool culled = *static_cast<bool*>(retval);
-    if (soundId == Z2SE_PLAY_REED_TOBIKUSA) {
-        svc_log->info(mod_ctx, culled ? "Native reed sound is culled" :
-                                        "Native reed sound is allowed");
-    } else {
-        svc_log->info(mod_ctx, culled ? "Hawk echo sound is culled" :
-                                        "Hawk echo sound is allowed");
-    }
-}
-
-void track_spawned_hawk_departure(ModContext*, void* args, void*, void*) {
-    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
-    if (hawk != nullptr && fopAcM_GetID(hawk) == g_spawnedHawkId) {
-        g_spawnedHawkAwayRequested = true;
-    }
-}
-
 void update_spawned_hawk_cleanup() {
     if (g_spawnedHawkId == fpcM_ERROR_PROCESS_ID_e) {
         return;
@@ -357,25 +291,46 @@ void update_spawned_hawk_cleanup() {
     fopAc_ac_c* actor = nullptr;
     if (!fopAcM_SearchByID(g_spawnedHawkId, &actor) || actor == nullptr) {
         g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
-        g_spawnedHawkAwayRequested = false;
-        g_spawnedHawkAwayStarted = false;
+        g_spawnedHawkAttackSeen = false;
+        g_spawnedHawkReturnSeen = false;
+        g_spawnedHawkIdleFrames = 0;
         return;
     }
 
     auto* hawk = static_cast<daNPC_TK_c*>(actor);
-    if (!g_spawnedHawkAwayRequested) {
+    const bool hawkAttacking = hawk->mActionType == 3;
+    hawk->mSphere.SetAtType(hawkAttacking ? kHawkAttackType : AT_TYPE_THROW_OBJ);
+    hawk->mSphere.SetAtAtp(hawkAttacking && hawkOneShotDamageEnabled() ? 80 : 1);
+    if (hawk->mActionType == 3) {
+        g_spawnedHawkAttackSeen = true;
+    }
+    if (g_spawnedHawkAttackSeen && hawk->mActionType == 4) {
+        g_spawnedHawkReturnSeen = true;
+    }
+
+    auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    const bool linkUsingHawk =
+        alink != nullptr &&
+        (alink->mProcID == daAlink_c::PROC_HAWK_CATCH ||
+            alink->mProcID == daAlink_c::PROC_HAWK_SUBJECT);
+    if (g_spawnedHawkAttackSeen && g_spawnedHawkReturnSeen &&
+        hawk->mActionType == 0 && !linkUsingHawk)
+    {
+        ++g_spawnedHawkIdleFrames;
+    } else {
+        g_spawnedHawkIdleFrames = 0;
+    }
+
+    if (g_spawnedHawkIdleFrames >= kHawkIdleDespawnDelayFrames) {
+        fopAcM_delete(hawk);
+        g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
+        g_spawnedHawkAttackSeen = false;
+        g_spawnedHawkReturnSeen = false;
+        g_spawnedHawkIdleFrames = 0;
+        svc_log->info(mod_ctx, "Removed modded Hawk after five idle seconds");
         return;
     }
 
-    if (hawk->mActionType == 4) {
-        g_spawnedHawkAwayStarted = true;
-    } else if (g_spawnedHawkAwayStarted && hawk->mActionType == 0) {
-        fopAcM_delete(hawk);
-        g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
-        g_spawnedHawkAwayRequested = false;
-        g_spawnedHawkAwayStarted = false;
-        svc_log->info(mod_ctx, "Removed temporary Hawk actor after it flew away");
-    }
 }
 
 bool secondaryItemAssigned(int button) {
@@ -395,6 +350,11 @@ bool is_lava_surface_contact(const daAlink_c* alink) {
 
 void update_lava_return_timer() {
     auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    if (infiniteLavaWalkEnabled() && is_lava_surface_contact(alink)) {
+        alink->mSinkShapeOffset = 0.0f;
+        g_lavaSinkFrames = 0;
+        return;
+    }
     if (!is_lava_surface_contact(alink) || alink->mSinkShapeOffset >= -0.5f ||
         alink->mProcID == daAlink_c::PROC_LAVA_RETURN)
     {
@@ -1114,6 +1074,9 @@ void treat_lava_as_surface(ModContext*, void* args, void*, void*) {
     alink->offNoResetFlg0(daAlink_c::FLG0_UNK_80);
     alink->mGndPolyAtt0 = 3;
     alink->mGndPolyAtt1 = 1;
+    if (infiniteLavaWalkEnabled()) {
+        alink->mSinkShapeOffset = 0.0f;
+    }
 }
 
 void maintain_lava_ground(ModContext*, void* args, void*, void*) {
@@ -1143,6 +1106,12 @@ HookAction prepare_lava_sinking(ModContext*, void* args, void*, void*) {
     auto* alink = mods::arg<daAlink_c*>(args, 0);
     if (!is_lava_surface_contact(alink)) {
         return HOOK_CONTINUE;
+    }
+
+    if (infiniteLavaWalkEnabled()) {
+        alink->mSinkShapeOffset = 0.0f;
+        g_lavaSinkFrames = 0;
+        return HOOK_SKIP_ORIGINAL;
     }
 
     g_sandShapeActor = alink;
@@ -1375,6 +1344,31 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     control.config_var = g_wheelOpenDirection;
     control.options = kWheelDirectionOptions;
     control.option_count = 2;
+    ModResult result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
+    if (result != MOD_OK) {
+        return result;
+    }
+
+    control = UI_CONTROL_DESC_INIT;
+    control.kind = UI_CONTROL_TOGGLE;
+    control.label = "Walk on lava indefinitely";
+    control.help_rml =
+        "When the Goron Tunic is equipped, stay at the lava surface without sinking or "
+        "triggering the five-second lava return.";
+    control.binding = UI_BINDING_CONFIG_VAR;
+    control.config_var = g_infiniteLavaWalk;
+    result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
+    if (result != MOD_OK) {
+        return result;
+    }
+
+    control = UI_CONTROL_DESC_INIT;
+    control.kind = UI_CONTROL_TOGGLE;
+    control.label = "Hawk Grass one-hit attacks";
+    control.help_rml =
+        "The Hawk called by the secondary Hawk Grass deals one-hit damage with its attacks.";
+    control.binding = UI_BINDING_CONFIG_VAR;
+    control.config_var = g_hawkOneShotDamage;
     return svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
 }
 
@@ -1409,10 +1403,6 @@ DEFINE_HOOK(&daAlink_c::itemTriggerCheck, ItemTriggerCheck);
 DEFINE_HOOK(&daAlink_c::checkNewItemChange, CheckNewItemChange);
 DEFINE_HOOK(&daAlink_c::changeItemTriggerKeepProc, ChangeItemTriggerKeepProc);
 DEFINE_HOOK(&daAlink_c::voiceStart, HawkGrassVoiceStart);
-DEFINE_HOOK(&Z2SeMgr::isSoundCulling, HawkGrassSoundCulling);
-DEFINE_HOOK(&daNPC_TK_c::executePerchDemo, HawkGrassPerchDemo);
-DEFINE_HOOK(&daNPC_TK_c::setAway, HawkSetAway);
-DEFINE_HOOK(&daNPC_TK_c::setAttack, HawkSetAttack);
 DEFINE_HOOK(&dComIfGp_setSelectItem, SetSelectItem);
 DEFINE_HOOK(&dComIfGs_setSelectItemIndex, SetSelectItemIndex);
 DEFINE_HOOK(&dMenu_Ring_c::_move, RingMove);
@@ -1446,14 +1436,7 @@ ModResult install_hooks() {
     ADD_PRE(ItemTriggerCheck, handle_tunic_item_trigger);
     ADD_POST(CheckNewItemChange, force_hawk_grass_item_action);
     ADD_PRE(ChangeItemTriggerKeepProc, handle_hawk_grass_use);
-    ADD_PRE(HawkGrassVoiceStart, play_hawk_grass_reed);
     ADD_POST(HawkGrassVoiceStart, spawn_hawk_after_grass_sound);
-    ADD_PRE(HawkGrassSoundCulling, handle_hawk_grass_culling);
-    ADD_POST(HawkGrassSoundCulling, log_hawk_grass_sound_culling);
-    ADD_PRE(HawkGrassPerchDemo, suppress_native_hawk_echo);
-    ADD_POST(HawkGrassPerchDemo, play_hawk_grass_echo);
-    ADD_POST(HawkSetAway, track_spawned_hawk_departure);
-    ADD_POST(HawkSetAttack, track_spawned_hawk_departure);
     ADD_PRE(SetSelectItemIndex, clear_secondary_assignment_on_vanilla_equip);
     ADD_PRE(SetSelectItem, sync_secondary_item_hook);
     ADD_PRE(RingMove, handle_secondary_ring_move);
@@ -1497,6 +1480,26 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     ModResult result = svc_config->register_var(mod_ctx, &config, &g_wheelOpenDirection);
     if (result != MOD_OK) {
         svc_log->error(mod_ctx, "failed to register secondary wheel direction setting");
+        return result;
+    }
+
+    config = CONFIG_VAR_DESC_INIT;
+    config.name = "infiniteLavaWalk";
+    config.type = CONFIG_VAR_BOOL;
+    config.default_bool = false;
+    result = svc_config->register_var(mod_ctx, &config, &g_infiniteLavaWalk);
+    if (result != MOD_OK) {
+        svc_log->error(mod_ctx, "failed to register infinite lava walk setting");
+        return result;
+    }
+
+    config = CONFIG_VAR_DESC_INIT;
+    config.name = "hawkOneShotDamage";
+    config.type = CONFIG_VAR_BOOL;
+    config.default_bool = false;
+    result = svc_config->register_var(mod_ctx, &config, &g_hawkOneShotDamage);
+    if (result != MOD_OK) {
+        svc_log->error(mod_ctx, "failed to register Hawk Grass damage setting");
         return result;
     }
 
