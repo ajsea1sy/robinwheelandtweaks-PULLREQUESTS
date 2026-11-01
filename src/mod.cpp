@@ -10,7 +10,10 @@
 #include "JSystem/J2DGraph/J2DTextBox.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
 #include "JSystem/JUtility/JUTNameTab.h"
+#include "Z2AudioLib/Z2AudioMgr.h"
+#include "Z2AudioLib/Z2SeMgr.h"
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_npc_tk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_lib.h"
 #include "d/d_meter2_draw.h"
@@ -21,6 +24,8 @@
 #include "d/d_meter_HIO.h"
 #include "d/d_pane_class.h"
 #include "d/d_select_cursor.h"
+#include "f_op/f_op_actor_mng.h"
+#include "f_pc/f_pc_name.h"
 #include "m_Do/m_Do_controller_pad.h"
 
 #include <algorithm>
@@ -39,7 +44,10 @@ namespace {
 constexpr int kWheelOpensLeft = 0;
 constexpr int kWheelOpensDown = 1;
 constexpr u8 kGoronTunicSlot = 0xFE;
+constexpr u8 kHawkGrassItem = 0xFD;
 constexpr u8 kSecondarySlotBase = 0x80;
+constexpr int kGrassWhistleItemProcType = 15;
+constexpr int kHawkGrassIconTexture = 0x59;
 constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 1;
 constexpr f32 kSecondaryIconScale = 0.55f;
 constexpr f32 kSecondaryCursorScale = 0.5f;
@@ -60,10 +68,21 @@ int g_mapInputDepth = 0;
 u8 g_savedGroundAtt0 = 0;
 u8 g_savedGroundAtt1 = 0;
 daAlink_c* g_sandShapeActor = nullptr;
+request_of_phase_process_class g_hawkGrassPhase{};
+daAlink_c* g_pendingHawkGrassUse = nullptr;
+u8 g_pendingHawkGrassButton = 0;
+bool g_hawkGrassPhaseRequested = false;
+bool g_hawkGrassArchiveLoaded = false;
+fpc_ProcID g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
+bool g_spawnedHawkAwayRequested = false;
+bool g_spawnedHawkAwayStarted = false;
+u32 g_manualHawkGrassSoundId = 0xFFFFFFFF;
+bool g_suppressHawkGrassEcho = false;
 
 std::array<u8, MAX_ITEM_SLOTS> g_secondarySlots = [] {
     std::array<u8, MAX_ITEM_SLOTS> slots{};
     slots.fill(dItemNo_NONE_e);
+    slots[0] = kHawkGrassItem;
     return slots;
 }();
 std::array<u8, MAX_SELECT_ITEM> g_secondarySelectedItems = [] {
@@ -110,10 +129,253 @@ u8 secondaryItemForSlot(u8 slotId) {
     if (slotId >= kSecondarySlotBase &&
         slotId < kSecondarySlotBase + MAX_ITEM_SLOTS)
     {
-        return g_secondarySlots[slotId - kSecondarySlotBase];
+        const u8 item = g_secondarySlots[slotId - kSecondarySlotBase];
+        return item == kHawkGrassItem ? dItemNo_HORSE_FLUTE_e : item;
     }
 
     return dItemNo_NONE_e;
+}
+
+u8 secondaryItemIconForSlot(u8 slotId) {
+    if (slotId >= kSecondarySlotBase &&
+        slotId < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+        g_secondarySlots[slotId - kSecondarySlotBase] == kHawkGrassItem)
+    {
+        return dItemNo_WOOD_STICK_e;
+    }
+
+    return secondaryItemForSlot(slotId);
+}
+
+bool isHawkGrassSlot(u8 slotId) {
+    return slotId >= kSecondarySlotBase &&
+           slotId < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+           g_secondarySlots[slotId - kSecondarySlotBase] == kHawkGrassItem;
+}
+
+int begin_hawk_grass_whistle(daAlink_c* alink, u8 button) {
+    if (alink == nullptr || alink->mProcID == daAlink_c::PROC_GRASS_WHISTLE_WAIT) {
+        return 1;
+    }
+
+    if (dComIfG_getObjectRes("J_Tobi", 3) == nullptr) {
+        svc_log->error(mod_ctx, "Hawk Grass model archive loaded without its model resource");
+        return 0;
+    }
+
+    alink->mSelectItemId = button;
+    const int result = alink->procGrassWhistleWaitInit(0, -1, 0, 0, nullptr);
+    if (alink->mProcID != daAlink_c::PROC_GRASS_WHISTLE_WAIT) {
+        svc_log->warn(mod_ctx, "Hawk Grass whistle action was rejected by the game");
+        return result;
+    }
+
+    alink->mLeftHandIndex = 0xFE;
+    alink->setGrassWhistleModel(0);
+    svc_log->info(mod_ctx, "Hawk Grass equipped; press A to play or B to cancel");
+    return result;
+}
+
+void update_hawk_grass_resource() {
+    if (!g_hawkGrassPhaseRequested || g_hawkGrassArchiveLoaded) {
+        return;
+    }
+
+    const cPhs_Step phase = dComIfG_resLoad(&g_hawkGrassPhase, "J_Tobi");
+    if (phase == cPhs_COMPLEATE_e) {
+        g_hawkGrassArchiveLoaded = true;
+        svc_log->info(mod_ctx, "Hawk Grass model archive loaded");
+        if (g_pendingHawkGrassUse != nullptr) {
+            auto* alink = g_pendingHawkGrassUse;
+            const u8 button = g_pendingHawkGrassButton;
+            g_pendingHawkGrassUse = nullptr;
+            begin_hawk_grass_whistle(alink, button);
+        }
+    } else if (phase == cPhs_ERROR_e || phase == cPhs_UNK3_e) {
+        g_pendingHawkGrassUse = nullptr;
+        g_hawkGrassPhaseRequested = false;
+        svc_log->error(mod_ctx, "Failed to load the Hawk Grass model archive");
+    }
+}
+
+const char* secondaryItemNameForSlot(u8 slotId) {
+    if (slotId == kGoronTunicSlot) {
+        return "Goron Tunic";
+    }
+
+    if (slotId >= kSecondarySlotBase &&
+        slotId < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+        g_secondarySlots[slotId - kSecondarySlotBase] == kHawkGrassItem)
+    {
+        return "Hawk Grass";
+    }
+
+    return "";
+}
+
+bool secondaryHawkGrassAssigned(int button) {
+    if (button < 0 || button > 1) {
+        return false;
+    }
+
+    const u8 slotId = g_secondarySelectedItems[button];
+    return slotId >= kSecondarySlotBase &&
+           slotId < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+           g_secondarySlots[slotId - kSecondarySlotBase] == kHawkGrassItem;
+}
+
+void spawn_hawk_for_grass(daAlink_c* alink) {
+    if (fopAcM_SearchByName(fpcNm_NPC_TK_e) != nullptr) {
+        return;
+    }
+
+    cXyz spawnPosition = alink->current.pos;
+    spawnPosition.y += 300.0f;
+    const fpc_ProcID hawkId = fopAcM_create(
+        fpcNm_NPC_TK_e, 0xFFFFFFFF, &spawnPosition, fopAcM_GetRoomNo(alink),
+        &alink->shape_angle, nullptr, -1);
+    if (hawkId == fpcM_ERROR_PROCESS_ID_e) {
+        svc_log->error(mod_ctx, "Failed to create Hawk actor for Hawk Grass");
+    } else {
+        g_spawnedHawkId = hawkId;
+        g_spawnedHawkAwayRequested = false;
+        g_spawnedHawkAwayStarted = false;
+        svc_log->info(mod_ctx, "Created Hawk actor for Hawk Grass");
+    }
+}
+
+bool start_hawk_grass_sound(u32 soundId, const cXyz* position, int roomNo) {
+    auto* audio = Z2GetAudioMgr();
+    if (audio == nullptr) {
+        svc_log->error(mod_ctx, "Dusklight audio manager is unavailable for Hawk Grass sound");
+        return false;
+    }
+
+    g_manualHawkGrassSoundId = soundId;
+    const bool started = audio->seStart(soundId, position, 0, dComIfGp_getReverb(roomNo),
+        1.0f, 1.0f, -1.0f, -1.0f, 0);
+    g_manualHawkGrassSoundId = 0xFFFFFFFF;
+
+    if (!started) {
+        svc_log->error(mod_ctx, soundId == Z2SE_PLAY_REED_TOBIKUSA ?
+            "Dusklight rejected the Hawk Grass reed sound" :
+            "Dusklight rejected the Hawk Grass echo sound");
+    }
+
+    return started;
+}
+
+HookAction play_hawk_grass_reed(ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    const u32 soundId = mods::arg<u32>(args, 1);
+    if (alink == nullptr || soundId != Z2SE_PLAY_REED_TOBIKUSA ||
+        alink->mProcID != daAlink_c::PROC_GRASS_WHISTLE_WAIT ||
+        alink->field_0x3198 != 0x100 || !secondaryHawkGrassAssigned(alink->mSelectItemId))
+    {
+        return HOOK_CONTINUE;
+    }
+
+    start_hawk_grass_sound(soundId, &alink->current.pos, fopAcM_GetRoomNo(alink));
+    return HOOK_SKIP_ORIGINAL;
+}
+
+void spawn_hawk_after_grass_sound(ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    const u32 soundId = mods::arg<u32>(args, 1);
+    if (alink == nullptr || soundId != Z2SE_PLAY_REED_TOBIKUSA ||
+        alink->mProcID != daAlink_c::PROC_GRASS_WHISTLE_WAIT ||
+        alink->field_0x3198 != 0x100 || !secondaryHawkGrassAssigned(alink->mSelectItemId))
+    {
+        return;
+    }
+
+    spawn_hawk_for_grass(alink);
+}
+
+HookAction suppress_native_hawk_echo(ModContext*, void* args, void*, void*) {
+    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
+    const int perchAction = mods::arg<int>(args, 1);
+    g_suppressHawkGrassEcho = hawk != nullptr &&
+        fopAcM_GetID(hawk) == g_spawnedHawkId && perchAction == 1 &&
+        hawk->field_0x6b4 == 150;
+    return HOOK_CONTINUE;
+}
+
+void play_hawk_grass_echo(ModContext*, void* args, void*, void*) {
+    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
+    const bool playEcho = g_suppressHawkGrassEcho;
+    g_suppressHawkGrassEcho = false;
+    if (playEcho && hawk != nullptr) {
+        start_hawk_grass_sound(Z2SE_TOBIKUSA_ECHO, &hawk->current.pos,
+            fopAcM_GetRoomNo(hawk));
+    }
+}
+
+HookAction handle_hawk_grass_culling(ModContext*, void* args, void* retval, void*) {
+    const u32 soundId = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
+    if (soundId == g_manualHawkGrassSoundId) {
+        *static_cast<bool*>(retval) = false;
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    if (soundId == Z2SE_TOBIKUSA_ECHO && g_suppressHawkGrassEcho) {
+        *static_cast<bool*>(retval) = true;
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    return HOOK_CONTINUE;
+}
+
+void log_hawk_grass_sound_culling(ModContext*, void* args, void* retval, void*) {
+    const u32 soundId = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
+    if (soundId != Z2SE_PLAY_REED_TOBIKUSA && soundId != Z2SE_TOBIKUSA_ECHO) {
+        return;
+    }
+
+    const bool culled = *static_cast<bool*>(retval);
+    if (soundId == Z2SE_PLAY_REED_TOBIKUSA) {
+        svc_log->info(mod_ctx, culled ? "Native reed sound is culled" :
+                                        "Native reed sound is allowed");
+    } else {
+        svc_log->info(mod_ctx, culled ? "Hawk echo sound is culled" :
+                                        "Hawk echo sound is allowed");
+    }
+}
+
+void track_spawned_hawk_departure(ModContext*, void* args, void*, void*) {
+    auto* hawk = mods::arg<daNPC_TK_c*>(args, 0);
+    if (hawk != nullptr && fopAcM_GetID(hawk) == g_spawnedHawkId) {
+        g_spawnedHawkAwayRequested = true;
+    }
+}
+
+void update_spawned_hawk_cleanup() {
+    if (g_spawnedHawkId == fpcM_ERROR_PROCESS_ID_e) {
+        return;
+    }
+
+    fopAc_ac_c* actor = nullptr;
+    if (!fopAcM_SearchByID(g_spawnedHawkId, &actor) || actor == nullptr) {
+        g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
+        g_spawnedHawkAwayRequested = false;
+        g_spawnedHawkAwayStarted = false;
+        return;
+    }
+
+    auto* hawk = static_cast<daNPC_TK_c*>(actor);
+    if (!g_spawnedHawkAwayRequested) {
+        return;
+    }
+
+    if (hawk->mActionType == 4) {
+        g_spawnedHawkAwayStarted = true;
+    } else if (g_spawnedHawkAwayStarted && hawk->mActionType == 0) {
+        fopAcM_delete(hawk);
+        g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
+        g_spawnedHawkAwayRequested = false;
+        g_spawnedHawkAwayStarted = false;
+        svc_log->info(mod_ctx, "Removed temporary Hawk actor after it flew away");
+    }
 }
 
 bool secondaryItemAssigned(int button) {
@@ -319,6 +581,7 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
 
     for (u8 index = 0; index < MAX_ITEM_SLOTS; ++index) {
         const u8 item = secondaryItemForSlot(g_secondaryWheelSlotIds[index]);
+        const u8 iconItem = secondaryItemIconForSlot(g_secondaryWheelSlotIds[index]);
         ring->mItemSlots[index] = g_secondaryWheelSlotIds[index];
         if (item == dItemNo_NONE_e) {
             continue;
@@ -329,15 +592,16 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
         }
 
         const int textureCount = dMeter2Info_readItemTexture(
-            item, ring->mpItemBuf[index][0], nullptr, ring->mpItemBuf[index][1], nullptr,
-            ring->mpItemBuf[index][2], nullptr, nullptr, nullptr, -1);
+            iconItem, ring->mpItemBuf[index][0], nullptr, ring->mpItemBuf[index][1], nullptr,
+            ring->mpItemBuf[index][2], nullptr, nullptr, nullptr,
+            isHawkGrassSlot(g_secondaryWheelSlotIds[index]) ? kHawkGrassIconTexture : -1);
         for (int texture = 0; texture < std::min(textureCount, 3); ++texture) {
             ring->mpItemTex[index][texture] = JKR_NEW J2DPicture(ring->mpItemBuf[index][texture]);
             ring->mpItemTex[index][texture]->setBasePosition(J2DBasePosition_4);
         }
-        dMeter2Info_setItemColor(item, ring->mpItemTex[index][0], ring->mpItemTex[index][1],
+        dMeter2Info_setItemColor(iconItem, ring->mpItemTex[index][0], ring->mpItemTex[index][1],
             ring->mpItemTex[index][2], nullptr);
-        const f32 scale = dItem_data::getTexScale(item) / 100.0f;
+        const f32 scale = dItem_data::getTexScale(iconItem) / 100.0f;
         ring->mItemSlotParam1[index] =
             ring->mpItemBuf[index][0]->width / 48.0f * scale * kSecondaryIconScale;
         ring->mItemSlotParam2[index] =
@@ -388,9 +652,7 @@ void set_secondary_ring_name(dMenu_Ring_c* ring) {
     for (const auto nameId : names) {
         if (auto* name = static_cast<J2DTextBox*>(ring->mpCenterScreen->search(nameId))) {
             name->setString(0x40,
-                g_secondaryWheelSlotIds[ring->mCurrentSlot] == kGoronTunicSlot
-                    ? "Goron Tunic"
-                    : "");
+                secondaryItemNameForSlot(g_secondaryWheelSlotIds[ring->mCurrentSlot]));
         }
     }
 }
@@ -665,27 +927,23 @@ HookAction suppress_secondary_explain(ModContext*, void* args, void* retval, voi
     return HOOK_CONTINUE;
 }
 
-void name_goron_tunic(ModContext*, void* args, void*, void*) {
+void name_secondary_item(ModContext*, void* args, void*, void*) {
     auto* ring = mods::arg<dMenu_Ring_c*>(args, 0);
     if (!isSecondaryRing(ring) || ring->mCurrentSlot >= kSecondaryWheelSlotCount ||
-        g_secondaryWheelSlotIds[ring->mCurrentSlot] != kGoronTunicSlot ||
         ring->mpCenterScreen == nullptr)
     {
         return;
     }
 
-    constexpr unsigned long long firstNames[] = {
-        MULTI_CHAR('item_n04'), MULTI_CHAR('fitem_n1')};
-    constexpr unsigned long long otherNames[] = {
-        MULTI_CHAR('fitem_n2'), MULTI_CHAR('fitem_n3'), MULTI_CHAR('fitem_n4')};
-    for (const auto nameId : firstNames) {
+    constexpr unsigned long long names[] = {
+        MULTI_CHAR('item_n04'), MULTI_CHAR('item_n05'), MULTI_CHAR('item_n06'),
+        MULTI_CHAR('item_n07'), MULTI_CHAR('fitem_n1'), MULTI_CHAR('fitem_n2'),
+        MULTI_CHAR('fitem_n3'), MULTI_CHAR('fitem_n4')};
+    const char* itemName = secondaryItemNameForSlot(
+        g_secondaryWheelSlotIds[ring->mCurrentSlot]);
+    for (const auto nameId : names) {
         if (auto* name = static_cast<J2DTextBox*>(ring->mpCenterScreen->search(nameId))) {
-            name->setString(0x40, "Goron Tunic");
-        }
-    }
-    for (const auto nameId : otherNames) {
-        if (auto* name = static_cast<J2DTextBox*>(ring->mpCenterScreen->search(nameId))) {
-            name->setString(0x40, "Goron Tunic");
+            name->setString(0x40, itemName);
         }
     }
 }
@@ -1008,6 +1266,26 @@ HookAction sync_secondary_item_hook(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+HookAction clear_secondary_assignment_on_vanilla_equip(ModContext*, void* args, void*, void*) {
+    const int button = mods::arg<int>(args, 0);
+    const u8 itemSlot = mods::arg<u8>(args, 1);
+    if (button < 0 || button > 1 || itemSlot >= MAX_ITEM_SLOTS ||
+        dComIfGs_getItem(itemSlot, false) == dItemNo_NONE_e ||
+        !secondaryItemAssigned(button))
+    {
+        return HOOK_CONTINUE;
+    }
+
+    g_secondarySelectedItems[button] = dItemNo_NONE_e;
+    if (!secondaryTunicAssigned(0) && !secondaryTunicAssigned(1)) {
+        g_goronTunicEquipped = false;
+    }
+    svc_log->info(mod_ctx, button == 0 ?
+        "Cleared secondary X item because a vanilla item was equipped" :
+        "Cleared secondary Y item because a vanilla item was equipped");
+    return HOOK_CONTINUE;
+}
+
 HookAction handle_tunic_item_trigger(ModContext*, void* args, void* retval, void*) {
     auto* alink = mods::arg<daAlink_c*>(args, 0);
     if (alink == nullptr || g_secondaryRing != nullptr || g_primaryRingOpen) {
@@ -1030,7 +1308,45 @@ HookAction handle_tunic_item_trigger(ModContext*, void* args, void* retval, void
         *static_cast<BOOL*>(retval) = FALSE;
         return HOOK_SKIP_ORIGINAL;
     }
+
     return HOOK_CONTINUE;
+}
+
+HookAction handle_hawk_grass_use(ModContext*, void* args, void* retval, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    const u8 button = mods::arg<u8>(args, 1);
+    const int procType = mods::arg<int>(args, 2);
+    if (alink == nullptr || procType != kGrassWhistleItemProcType ||
+        !secondaryHawkGrassAssigned(button))
+    {
+        return HOOK_CONTINUE;
+    }
+
+    if (alink->mProcID == daAlink_c::PROC_GRASS_WHISTLE_WAIT) {
+        *static_cast<int*>(retval) = 1;
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    alink->mSelectItemId = button;
+    if (g_hawkGrassArchiveLoaded) {
+        *static_cast<int*>(retval) = begin_hawk_grass_whistle(alink, button);
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    g_pendingHawkGrassUse = alink;
+    g_pendingHawkGrassButton = button;
+    g_hawkGrassPhaseRequested = true;
+    update_hawk_grass_resource();
+    *static_cast<int*>(retval) =
+        g_hawkGrassPhaseRequested || g_hawkGrassArchiveLoaded ? 1 : 0;
+    return HOOK_SKIP_ORIGINAL;
+}
+
+void force_hawk_grass_item_action(ModContext*, void* args, void* retval, void*) {
+    const u8 button = mods::arg<u8>(args, 1);
+    if (!g_primaryRingOpen && secondaryHawkGrassAssigned(button)) {
+        *static_cast<int*>(retval) = kGrassWhistleItemProcType;
+    }
 }
 
 void tint_goron_tunic_hud_icon(ModContext*, void* args, void*, void*) {
@@ -1090,7 +1406,15 @@ DEFINE_HOOK(&daAlink_c::setSandShapeOffset, SetSandShapeOffset);
 DEFINE_HOOK(&daAlink_c::checkWaterPolygonUnder, CheckWaterPolygonUnder);
 DEFINE_HOOK(&daAlink_c::checkPolyDamage, CheckPolyDamage);
 DEFINE_HOOK(&daAlink_c::itemTriggerCheck, ItemTriggerCheck);
+DEFINE_HOOK(&daAlink_c::checkNewItemChange, CheckNewItemChange);
+DEFINE_HOOK(&daAlink_c::changeItemTriggerKeepProc, ChangeItemTriggerKeepProc);
+DEFINE_HOOK(&daAlink_c::voiceStart, HawkGrassVoiceStart);
+DEFINE_HOOK(&Z2SeMgr::isSoundCulling, HawkGrassSoundCulling);
+DEFINE_HOOK(&daNPC_TK_c::executePerchDemo, HawkGrassPerchDemo);
+DEFINE_HOOK(&daNPC_TK_c::setAway, HawkSetAway);
+DEFINE_HOOK(&daNPC_TK_c::setAttack, HawkSetAttack);
 DEFINE_HOOK(&dComIfGp_setSelectItem, SetSelectItem);
+DEFINE_HOOK(&dComIfGs_setSelectItemIndex, SetSelectItemIndex);
 DEFINE_HOOK(&dMenu_Ring_c::_move, RingMove);
 DEFINE_HOOK(&dMenu_Ring_c::_draw, RingDraw);
 DEFINE_HOOK(&dMenu_Ring_c::isOpen, RingIsOpen);
@@ -1110,7 +1434,7 @@ DEFINE_HOOK(&daAlink_c::setWaterDropColor, SetWaterDropColor);
 
 ModResult install_hooks() {
     ADD_PRE(OpenExplain, suppress_secondary_explain);
-    ADD_POST(SetNameString, name_goron_tunic);
+    ADD_POST(SetNameString, name_secondary_item);
     ADD_POST(ChangeTextureItemXY, tint_goron_tunic_hud_icon);
     ADD_POST(SetWaterY, treat_lava_as_surface);
     ADD_POST(SetRoomInfo, maintain_lava_ground);
@@ -1120,6 +1444,17 @@ ModResult install_hooks() {
     ADD_PRE(CheckWaterPolygonUnder, suppress_lava_submersion);
     ADD_PRE(CheckPolyDamage, suppress_lava_damage);
     ADD_PRE(ItemTriggerCheck, handle_tunic_item_trigger);
+    ADD_POST(CheckNewItemChange, force_hawk_grass_item_action);
+    ADD_PRE(ChangeItemTriggerKeepProc, handle_hawk_grass_use);
+    ADD_PRE(HawkGrassVoiceStart, play_hawk_grass_reed);
+    ADD_POST(HawkGrassVoiceStart, spawn_hawk_after_grass_sound);
+    ADD_PRE(HawkGrassSoundCulling, handle_hawk_grass_culling);
+    ADD_POST(HawkGrassSoundCulling, log_hawk_grass_sound_culling);
+    ADD_PRE(HawkGrassPerchDemo, suppress_native_hawk_echo);
+    ADD_POST(HawkGrassPerchDemo, play_hawk_grass_echo);
+    ADD_POST(HawkSetAway, track_spawned_hawk_departure);
+    ADD_POST(HawkSetAttack, track_spawned_hawk_departure);
+    ADD_PRE(SetSelectItemIndex, clear_secondary_assignment_on_vanilla_equip);
     ADD_PRE(SetSelectItem, sync_secondary_item_hook);
     ADD_PRE(RingMove, handle_secondary_ring_move);
     ADD_PRE(RingDraw, handle_secondary_ring_draw);
@@ -1187,11 +1522,21 @@ MOD_EXPORT ModResult mod_update(ModError*) {
         g_tunicInputHandled = false;
     }
     update_lava_return_timer();
+    update_hawk_grass_resource();
+    update_spawned_hawk_cleanup();
     sync_secondary_select_items();
     return MOD_OK;
 }
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
+    if (g_hawkGrassPhaseRequested) {
+        dComIfG_resDelete(&g_hawkGrassPhase, "J_Tobi");
+    }
+    g_hawkGrassPhase = {};
+    g_hawkGrassPhaseRequested = false;
+    g_hawkGrassArchiveLoaded = false;
+    g_pendingHawkGrassUse = nullptr;
+    g_pendingHawkGrassButton = 0;
     g_secondaryRing = nullptr;
     g_openingSecondaryRing = false;
     g_goronTunicEquipped = false;
