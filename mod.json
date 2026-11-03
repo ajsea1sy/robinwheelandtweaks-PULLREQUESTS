@@ -1,7 +1,7 @@
 {
   "id": "dev.twilitrealm.secondary_inventory_wheel",
   "name": "RobinWheelAndTweaks",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "author": "RobinTheSoundsmith",
-  "description": "Adds a secondary inventory wheel, Hawk Grass, configurable Goron Tunic lava walking, and Hawk attack options."
+  "description": "Adds a secondary inventory wheel, Hover Boots water walking, Magic Armor Twilight Ward, Rupee Magnet, Hawk Grass, Goron Tunic lava walking, and Hawk attack options."
 }
