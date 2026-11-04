@@ -1,6 +1,7 @@
 #include "mods/service.hpp"
 #include "mods/svc/config.h"
 #include "mods/svc/hook.hpp"
+#include "mods/svc/interp.h"
 #include "mods/svc/log.h"
 #include "mods/svc/resource.h"
 #include "mods/svc/ui.h"
@@ -14,6 +15,9 @@
 #include "JSystem/J2DGraph/J2DGrafContext.h"
 #include "JSystem/J2DGraph/J2DPicture.h"
 #include "JSystem/J2DGraph/J2DTextBox.h"
+#include "JSystem/JAudio2/JAUSectionHeap.h"
+#include "JSystem/JAudio2/JASWaveArcLoader.h"
+#include "JSystem/JAudio2/JASWaveInfo.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
 #include "JSystem/JUtility/JUTNameTab.h"
 #include "d/actor/d_a_alink.h"
@@ -37,7 +41,9 @@
 #include "d/d_select_cursor.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
 #include "Z2AudioLib/Z2SceneMgr.h"
+#include "Z2AudioLib/Z2Param.h"
 #include "Z2AudioLib/Z2SeqMgr.h"
+#include "Z2AudioLib/Z2SoundMgr.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_name.h"
 #include "f_pc/f_pc_leaf.h"
@@ -56,6 +62,7 @@
 DEFINE_MOD();
 IMPORT_SERVICE(ConfigService, svc_config);
 IMPORT_SERVICE(HookService, svc_hook);
+IMPORT_SERVICE(InterpService, svc_interp);
 IMPORT_SERVICE(LogService, svc_log);
 IMPORT_SERVICE(ResourceService, svc_resource);
 IMPORT_SERVICE(UiService, svc_ui);
@@ -290,6 +297,16 @@ struct SitMusicWaveMapping {
     u8 wave2 = 0;
 };
 
+struct SitMusicWaveSnapshot {
+    bool active = false;
+    u8 requestWave1 = 0;
+    u8 requestWave2 = 0;
+    u8 loadedWave1 = 0;
+    u8 loadedWave2 = 0;
+    u32 mainTrack = static_cast<u32>(-1);
+    u8 mainStatus = 0xff;
+};
+
 constexpr SitMusicWaveMapping kSitMusicWaveMappings[] = {
     {Z2BGM_CARGO_GAME_TW, 0x24, 0},
     {Z2BGM_CASTLE_TOWN, 0x25, 0},
@@ -329,6 +346,7 @@ constexpr SitMusicWaveMapping kSitMusicWaveMappings[] = {
     {Z2BGM_MIDNA_SOS, 0x36, 0},
     {Z2BGM_MINIGAME_ROOM, 0x47, 0x46},
     {Z2BGM_OBACHAN, 0x40, 0},
+    {Z2BGM_TOAL_VILLEGE, 0x03, 0, 0x04},
     {Z2BGM_RANCH, 0x01, 0},
     {Z2BGM_ROOM_2, 0x35, 0},
     {Z2BGM_SHOP01, 0x07, 0},
@@ -339,7 +357,6 @@ constexpr SitMusicWaveMapping kSitMusicWaveMappings[] = {
     {Z2BGM_SUB_DUNGEON, 0x45, 0},
     {Z2BGM_TEMPLE_OF_TIME, 0x3E, 0, 0x1B},
     {Z2BGM_TOAL_NIGHT, 0x06, 0},
-    {Z2BGM_TOAL_VILLEGE, 0x03, 0},
     {Z2BGM_TWILIGHT, 0x0E, 0},
     {Z2BGM_ZORA_VILLAGE, 0x20, 0},
 };
@@ -370,17 +387,24 @@ ConfigVarHandle g_sitMusicTrack = 0;
 std::array<std::array<char, 48>, kSitMusicOptionCount> g_sitMusicOptionLabelStorage{};
 std::array<const char*, kSitMusicOptionCount> g_sitMusicOptionLabels{};
 bool g_sitMusicOptionsInitialized = false;
-bool g_sitMusicOverrideActive = false;
 u32 g_sitMusicActiveTrack = 0;
+u32 g_sitMusicLastStartedTrack = 0;
+u32 g_sitMusicReportedOverrideTrack = 0;
+int64_t g_sitMusicLastLoggedSelection = -1;
+bool g_sitMusicConfigReadFailureReported = false;
+bool g_sitMusicAudioManagerUnavailableReported = false;
+SitMusicWaveSnapshot g_sitMusicWaveSnapshot{};
+u32 g_sitMusicWaveTrack = 0;
+bool g_sitMusicBattleOverrideActive = false;
+bool g_sitMusicOriginalBattleBgmOff = true;
+bool g_sitMusicRestoreFailureReported = false;
+u8 g_sitMusicResolvedWave1 = 0;
 u32 g_sitMusicReportedFailureTrack = 0;
 u32 g_sitMusicWaveFailureTrack = 0;
 std::array<bool, 256> g_sitMusicOwnedWaves{};
 std::array<bool, 256> g_sitMusicWaveEraseFailureReported{};
 std::array<bool, 256> g_sitMusicWaveReleaseScheduled{};
 std::array<u8, 256> g_sitMusicWaveReleaseFrames{};
-bool g_sitMusicModifiersSaved = false;
-bool g_sitMusicPreviousHeightVolMod = false;
-bool g_sitMusicPreviousTimeProcVolMod = false;
 std::array<ConfigVarHandle, 2> g_secondaryAssignmentConfig{};
 UiMenuTabHandle g_robinMenuTab = 0;
 UiWindowHandle g_robinSettingsWindow = 0;
@@ -489,6 +513,7 @@ std::array<u8, kSecondaryWheelSlotCount> g_secondaryWheelSlotIds{};
 std::array<f32, kSecondaryWheelSlotCount> g_secondaryWheelSlotPosX{};
 std::array<f32, kSecondaryWheelSlotCount> g_secondaryWheelSlotPosY{};
 std::array<s16, kSecondaryWheelSlotCount> g_secondaryWheelSlotAngles{};
+bool g_secondaryRingInterpolationErrorLogged = false;
 std::array<J2DPicture*, 3> g_tunicWheelItemTex{};
 std::array<ResTIMG*, 3> g_tunicWheelItemBuf{};
 JKRExpHeap* g_tunicWheelItemHeap = nullptr;
@@ -565,7 +590,7 @@ void initialize_sit_music_options() {
     std::memcpy(g_sitMusicOptionLabelStorage[0].data(), kDefaultLabel, sizeof(kDefaultLabel));
     g_sitMusicOptionLabels[0] = g_sitMusicOptionLabelStorage[0].data();
     for (size_t track = 0; track < kSitMusicTrackCount; ++track) {
-        const char* source = std::strcmp(kSitMusicTrackNames[track], "EVENT01") == 0
+        const char* source = std::strcmp(kSitMusicTrackNames[track], "EVENT05") == 0
             ? "Our Children Taken"
             : kSitMusicTrackNames[track];
         auto& label = g_sitMusicOptionLabelStorage[track + 1];
@@ -592,9 +617,16 @@ void initialize_sit_music_options() {
 int64_t sitMusicSelection() {
     int64_t value = 0;
     if (g_sitMusicTrack == 0 ||
-        svc_config->get_int(mod_ctx, g_sitMusicTrack, &value) != MOD_OK ||
-        value < 0 || value >= static_cast<int64_t>(kSitMusicOptionCount))
+        svc_config->get_int(mod_ctx, g_sitMusicTrack, &value) != MOD_OK)
     {
+        if (!g_sitMusicConfigReadFailureReported) {
+            svc_log->warn(mod_ctx, "could not read Sit music selector config");
+            g_sitMusicConfigReadFailureReported = true;
+        }
+        return 0;
+    }
+    g_sitMusicConfigReadFailureReported = false;
+    if (value < 0 || value >= static_cast<int64_t>(kSitMusicOptionCount)) {
         return 0;
     }
     return value;
@@ -1328,6 +1360,8 @@ void load_tunic_wheel_textures(dMenu_Ring_c* ring) {
     tint_secondary_ring_icons(ring);
 }
 
+void record_secondary_ring_pose(dMenu_Ring_c* ring);
+
 void setup_secondary_ring(dMenu_Ring_c* ring) {
     g_secondaryWheelSlotIds.fill(dItemNo_NONE_e);
     for (u8 slot = 0; slot < MAX_ITEM_SLOTS; ++slot) {
@@ -1344,12 +1378,25 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
     ring->mYButtonSlot = dItemNo_NONE_e;
     ring->mStatus = dMenu_Ring_c::STATUS_WAIT;
     ring->mOldStatus = dMenu_Ring_c::STATUS_WAIT;
+    ring->mWaitFrames = std::max<s16>(g_ringHIO.mCursorChangeWaitFrames, 0);
     ring->field_0x674[0] = 0;
     ring->field_0x674[1] = 0;
     ring->field_0x674[2] = 0;
     ring->field_0x674[3] = 0;
     ring->mRingRadiusH = g_ringHIO.mRingRadiusH;
     ring->mRingRadiusV = g_ringHIO.mRingRadiusV;
+    ring->mAlphaRate = 0.0f;
+    ring->mCenterPosX = 0.0f;
+    ring->mCenterPosY = 0.0f;
+    if (ring->mRingOrigin == 0) {
+        ring->mCenterPosY = FB_HEIGHT_BASE;
+    } else if (ring->mRingOrigin == 2) {
+        ring->mCenterPosY = -FB_HEIGHT_BASE;
+    } else if (ring->mRingOrigin == 3) {
+        ring->mCenterPosX = FB_WIDTH_BASE;
+    } else {
+        ring->mCenterPosX = -FB_WIDTH_BASE;
+    }
 
     const f32 centerX = g_ringHIO.mItemRingPosX + FB_WIDTH_BASE / 2;
     const f32 centerY = g_ringHIO.mItemRingPosY + FB_HEIGHT_BASE / 2;
@@ -1476,6 +1523,7 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
     ring->mpDrawCursor->setParam(
         kSecondaryCursorScale, kSecondaryCursorScale, 0.1f, 0.6f, 0.5f);
     tint_secondary_ring_icons(ring);
+    record_secondary_ring_pose(ring);
 }
 
 void set_secondary_ring_name(dMenu_Ring_c* ring) {
@@ -1508,6 +1556,46 @@ u8 closest_secondary_wheel_slot(s16 stickAngle) {
         }
     }
     return closestSlot;
+}
+
+struct SecondaryRingPose {
+    f32 centerX;
+    f32 centerY;
+    f32 alpha;
+};
+
+void record_secondary_ring_pose(dMenu_Ring_c* ring) {
+#if TARGET_PC
+    ring->captureRenderState();
+#endif
+
+    InterpMtx pose{};
+    pose[0][0] = 1.0f;
+    pose[1][1] = 1.0f;
+    pose[2][2] = 1.0f;
+    pose[0][3] = ring->mCenterPosX;
+    pose[1][3] = ring->mCenterPosY;
+    pose[2][3] = ring->mAlphaRate;
+    if (svc_interp->record_mtx_keyed(mod_ctx, pose, ring) != MOD_OK &&
+        !g_secondaryRingInterpolationErrorLogged)
+    {
+        g_secondaryRingInterpolationErrorLogged = true;
+        svc_log->error(mod_ctx, "failed to record secondary wheel interpolation pose");
+    }
+}
+
+SecondaryRingPose read_secondary_ring_pose(const dMenu_Ring_c* ring) {
+    InterpMtx pose{};
+    if (svc_interp->lookup_replacement_mtx(ring, pose)) {
+        return {pose[0][3], pose[1][3], pose[2][3]};
+    }
+    return {ring->mCenterPosX, ring->mCenterPosY, ring->mAlphaRate};
+}
+
+void forget_secondary_ring_pose(const dMenu_Ring_c* ring) {
+    if (ring != nullptr && svc_interp->forget_mtx(mod_ctx, ring) != MOD_OK) {
+        svc_log->error(mod_ctx, "failed to release secondary wheel interpolation pose");
+    }
 }
 
 void position_secondary_cursor(dMenu_Ring_c* ring);
@@ -1554,14 +1642,26 @@ void set_ice_arrow_selected(daAlink_c* player, bool selected) {
 }
 
 void move_secondary_ring(dMenu_Ring_c* ring) {
-    if (ring->mStatus == dMenu_Ring_c::STATUS_WAIT &&
-        ring->mpStick != nullptr &&
-        ring->mpStick->getValueStick() >= 0.75f)
-    {
-        const u8 newSlot = closest_secondary_wheel_slot(ring->mpStick->getAngleStick());
-        if (newSlot != ring->mCurrentSlot) {
-            ring->mCurrentSlot = newSlot;
-            ring->field_0x670 = g_secondaryWheelSlotAngles[newSlot];
+    if (ring->mStatus == dMenu_Ring_c::STATUS_WAIT) {
+        if (ring->mWaitFrames > 0) {
+            --ring->mWaitFrames;
+        } else if (ring->mpStick != nullptr &&
+                   ring->mpStick->getValueStick() >= 0.75f)
+        {
+            const u8 targetSlot =
+                closest_secondary_wheel_slot(ring->mpStick->getAngleStick());
+            if (targetSlot != ring->mCurrentSlot) {
+                const s16 angleDelta = static_cast<s16>(
+                    g_secondaryWheelSlotAngles[targetSlot] -
+                    g_secondaryWheelSlotAngles[ring->mCurrentSlot]);
+                ring->mCurrentSlot = angleDelta < 0
+                    ? (ring->mCurrentSlot + 1) % kSecondaryWheelSlotCount
+                    : (ring->mCurrentSlot + kSecondaryWheelSlotCount - 1) %
+                        kSecondaryWheelSlotCount;
+                ring->field_0x670 = g_secondaryWheelSlotAngles[ring->mCurrentSlot];
+                ring->mWaitFrames =
+                    std::max<s16>(g_ringHIO.mCursorChangeWaitFrames, 0);
+            }
         }
     }
 
@@ -1617,6 +1717,7 @@ void move_secondary_ring(dMenu_Ring_c* ring) {
     position_secondary_cursor(ring);
     set_secondary_ring_name(ring);
     ring->setMixMessage();
+    record_secondary_ring_pose(ring);
 }
 
 void position_secondary_cursor(dMenu_Ring_c* ring) {
@@ -1663,6 +1764,7 @@ HookAction open_secondary_ring(ModContext*, void* args, void* retval, void*) {
         ring->mCenterPosY = 0.0f;
     }
     position_secondary_cursor(ring);
+    record_secondary_ring_pose(ring);
     *static_cast<bool*>(retval) = opened;
     return HOOK_SKIP_ORIGINAL;
 }
@@ -1676,6 +1778,7 @@ HookAction close_secondary_ring(ModContext*, void* args, void* retval, void*) {
     if (ring->field_0x674[0] != 0 || ring->field_0x674[1] != 0 ||
         ring->field_0x674[2] != 0 || ring->field_0x674[3] != 0)
     {
+        record_secondary_ring_pose(ring);
         *static_cast<bool*>(retval) = false;
         return HOOK_SKIP_ORIGINAL;
     }
@@ -1701,11 +1804,13 @@ HookAction close_secondary_ring(ModContext*, void* args, void* retval, void*) {
         ring->mCenterPosY = 0.0f;
     }
     position_secondary_cursor(ring);
+    record_secondary_ring_pose(ring);
     *static_cast<bool*>(retval) = closed;
     return HOOK_SKIP_ORIGINAL;
 }
 
 void draw_secondary_ring(dMenu_Ring_c* ring) {
+    const SecondaryRingPose pose = read_secondary_ring_pose(ring);
     J2DGrafContext* grafPort = dComIfGp_getCurrentGrafPort();
     grafPort->setup2D();
     if (ring->mRingPosX != g_ringHIO.mRingPosX ||
@@ -1722,19 +1827,20 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
         ring->mRingScaleV = g_ringHIO.mRingScaleV;
         ring->mpCircle->scale(ring->mRingScaleH, ring->mRingScaleV);
     }
-    ring->mpSpotParent->setAlphaRate(ring->mAlphaRate * g_ringHIO.mOverlayAlpha);
+    ring->mpSpotParent->setAlphaRate(pose.alpha * g_ringHIO.mOverlayAlpha);
     ring->mpSpotScreen->draw(0.0f, 0.0f, grafPort);
-    ring->mpCenterParent->setAlphaRate(ring->mAlphaRate);
-    ring->mpCenterScreen->draw(ring->mCenterPosX, ring->mCenterPosY, grafPort);
-    ring->mpMessageParent->setAlphaRate(ring->mAlphaRate);
-    ring->mpScreen->draw(ring->mCenterPosX, ring->mCenterPosY, grafPort);
+    ring->mpCenterParent->setAlphaRate(pose.alpha);
+    ring->mpCenterScreen->draw(pose.centerX, pose.centerY, grafPort);
+    ring->mpMessageParent->setAlphaRate(pose.alpha);
+    ring->mpScreen->draw(pose.centerX, pose.centerY, grafPort);
     if (ring->mPikariFlashingSpeed > 0.0f) {
         CPaneMgr paneMgr;
         auto* buttonPane = ring->mpScreen->search(MULTI_CHAR('gr_btn'));
         if (buttonPane != nullptr) {
             const Vec pos = paneMgr.getGlobalVtxCenter(buttonPane, true, 0);
             dMeter2Info_getMeterClass()->getMeterDrawPtr()->drawPikari(
-                pos.x, pos.y, &ring->mPikariFlashingSpeed, g_ringHIO.mPikariScale,
+                pos.x + pose.centerX, pos.y + pose.centerY,
+                &ring->mPikariFlashingSpeed, g_ringHIO.mPikariScale,
                 g_ringHIO.mPikariFrontOuter, g_ringHIO.mPikariFrontInner,
                 g_ringHIO.mPikariBackOuter, g_ringHIO.mPikariBackInner,
                 g_ringHIO.mPikariAnimSpeed, 2);
@@ -1771,12 +1877,12 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
     }
 
     for (u8 index = 0; index < kSecondaryWheelSlotCount; ++index) {
-        const f32 x = g_secondaryWheelSlotPosX[index] - 24.0f + ring->mCenterPosX;
-        const f32 y = g_secondaryWheelSlotPosY[index] - 24.0f + ring->mCenterPosY;
+        const f32 x = g_secondaryWheelSlotPosX[index] - 24.0f + pose.centerX;
+        const f32 y = g_secondaryWheelSlotPosY[index] - 24.0f + pose.centerY;
         if (index == MAX_ITEM_SLOTS) {
             if (g_sitWheelItemTex != nullptr) {
                 constexpr f32 iconSize = 36.0f;
-                g_sitWheelItemTex->setAlpha(ring->mAlphaRate * 255.0f);
+                g_sitWheelItemTex->setAlpha(pose.alpha * 255.0f);
                 g_sitWheelItemTex->draw(
                     x + (48.0f - iconSize) * 0.5f,
                     y + (48.0f - iconSize) * 0.5f,
@@ -1796,7 +1902,7 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
                 if (picture == nullptr) {
                     continue;
                 }
-                picture->setAlpha(ring->mAlphaRate * 255.0f);
+                picture->setAlpha(pose.alpha * 255.0f);
                 picture->draw(x + (48.0f - width) * 0.5f,
                     y + (48.0f - height) * 0.5f, width, height, 0, 0, 0);
             }
@@ -1808,7 +1914,7 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
             if (picture == nullptr) {
                 continue;
             }
-            picture->setAlpha(ring->mAlphaRate * 255.0f);
+            picture->setAlpha(pose.alpha * 255.0f);
             const f32 width = ring->mItemSlotParam1[index] * 48.0f;
             const f32 height = ring->mItemSlotParam2[index] * 48.0f;
             picture->draw(x + (48.0f - width) * 0.5f,
@@ -1833,15 +1939,20 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
             if (picture == nullptr) {
                 continue;
             }
-            picture->setAlpha(ring->mAlphaRate * 255.0f);
+            picture->setAlpha(pose.alpha * 255.0f);
             const f32 width = ring->field_0x548[button] * 48.0f;
             const f32 height = ring->field_0x558[button] * 48.0f;
-            picture->draw(center.x - width * 0.5f + ring->mCenterPosX,
-                center.y - height * 0.5f + ring->mCenterPosY,
+            picture->draw(center.x - width * 0.5f + pose.centerX,
+                center.y - height * 0.5f + pose.centerY,
                 width, height, 0, 0, 0);
         }
     }
 
+    if (ring->mCurrentSlot < kSecondaryWheelSlotCount) {
+        ring->mpDrawCursor->setPos(
+            g_secondaryWheelSlotPosX[ring->mCurrentSlot] + pose.centerX,
+            g_secondaryWheelSlotPosY[ring->mCurrentSlot] + pose.centerY);
+    }
     ring->mpDrawCursor->draw();
 }
 
@@ -1950,6 +2061,7 @@ HookAction prepare_ring_delete(ModContext*, void* args, void*, void*) {
     auto* window = mods::arg<dMw_c*>(args, 0);
     g_deletingSecondaryRing = isSecondaryRing(window->mpMenuRing);
     if (g_deletingSecondaryRing) {
+        forget_secondary_ring_pose(window->mpMenuRing);
         clear_sit_wheel_texture();
         clear_tunic_wheel_textures();
     }
@@ -3590,6 +3702,7 @@ void begin_sit_action(daAlink_c* alink) {
     }
     alink->setSingleAnimeBase(daAlink_c::ANM_WAIT_SIT);
     g_sitActionState = SitActionState::Seated;
+    svc_log->info(mod_ctx, "Sit action entered");
 }
 
 void begin_stand_action(daAlink_c* alink) {
@@ -3601,6 +3714,7 @@ void begin_stand_action(daAlink_c* alink) {
     alink->mSinkShapeOffset = 0.0f;
     alink->setSingleAnimeBase(daAlink_c::ANM_WAIT);
     g_sitActionState = SitActionState::Inactive;
+    svc_log->info(mod_ctx, "Sit action ended by player");
 }
 
 HookAction preserve_sit_idle_animation(ModContext*, void* args, void* retval, void*) {
@@ -3635,9 +3749,18 @@ void update_sit_action() {
     auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
     const bool grounded = alink != nullptr && alink->mLinkAcch.ChkGroundHit();
     const bool hovering = is_hover_boots_hovering(alink);
-    if (alink == nullptr || alink->checkWolf() || alink->checkEventRun() ||
+    const bool eventRunning = alink != nullptr && alink->checkEventRun();
+    if (alink == nullptr || alink->checkWolf() || eventRunning ||
         alink->mProcID != daAlink_c::PROC_WAIT || (!grounded && !hovering))
     {
+        char message[128];
+        std::snprintf(message, sizeof(message),
+                      "Sit action ended by game state: actor=%u event=%u proc=%d grounded=%u hovering=%u",
+                      static_cast<u32>(alink != nullptr),
+                      static_cast<u32>(eventRunning),
+                      alink != nullptr ? static_cast<int>(alink->mProcID) : -1,
+                      static_cast<u32>(grounded), static_cast<u32>(hovering));
+        svc_log->warn(mod_ctx, message);
         if (alink != nullptr) {
             restore_sit_shape_angles(alink);
             alink->mSinkShapeOffset = 0.0f;
@@ -3659,6 +3782,7 @@ void update_sit_action() {
         restore_sit_shape_angles(alink);
         alink->mSinkShapeOffset = 0.0f;
         g_sitActionState = SitActionState::Inactive;
+        svc_log->warn(mod_ctx, "Sit action ended: no valid ground height");
         return;
     }
 
@@ -3667,30 +3791,12 @@ void update_sit_action() {
     alink->speedF = 0.0f;
 }
 
-void save_and_disable_sit_music_modifiers(Z2SeqMgr* sequenceManager) {
-    if (!g_sitMusicModifiersSaved) {
-        g_sitMusicPreviousHeightVolMod = sequenceManager->mFlags.mHeightVolMod;
-        g_sitMusicPreviousTimeProcVolMod = sequenceManager->mFlags.mTimeProcVolMod;
-        g_sitMusicModifiersSaved = true;
-    }
-
-    sequenceManager->setHeightVolMod(false, 0);
-    sequenceManager->setTimeProcVolMod(false, 0);
-    sequenceManager->field_0xa4.forceIn();
-}
-
-void restore_sit_music_modifiers(Z2SeqMgr* sequenceManager) {
-    if (!g_sitMusicModifiersSaved || sequenceManager == nullptr) {
-        return;
-    }
-
-    sequenceManager->setHeightVolMod(g_sitMusicPreviousHeightVolMod, 30);
-    sequenceManager->setTimeProcVolMod(g_sitMusicPreviousTimeProcVolMod, 0);
-    g_sitMusicModifiersSaved = false;
-}
-
 u32 expected_sit_music_bgm_id(u32 selectedTrack) {
     return selectedTrack == Z2BGM_LUTERA_DEMO ? Z2BGM_LUTERA2 : selectedTrack;
+}
+
+u32 sit_music_playback_id(Z2SeqMgr* sequenceManager, u32) {
+    return sequenceManager->getSubBgmID();
 }
 
 const SitMusicWaveMapping* sit_music_wave_mapping(u32 track) {
@@ -3721,6 +3827,100 @@ void report_sit_music_wave_failure(u32 track, u32 wave, const char* action) {
     g_sitMusicWaveFailureTrack = track;
 }
 
+void set_sit_music_battle_override(Z2SeqMgr* sequenceManager) {
+    if (!g_sitMusicBattleOverrideActive) {
+        g_sitMusicOriginalBattleBgmOff =
+            sequenceManager->mFlags.mBattleBgmOff;
+        g_sitMusicBattleOverrideActive = true;
+    }
+    sequenceManager->setBattleBgmOff(true);
+    sequenceManager->mBattleSeqCount = 0;
+}
+
+bool load_sit_music_wave(Z2SceneMgr* sceneManager, u8 wave) {
+    if (sceneManager->loadBgmWave(wave)) {
+        return true;
+    }
+
+    if (sceneManager->getBgmLoadStatus(wave) != 0) {
+        return false;
+    }
+
+    auto* sectionHeap = JAUSectionHeap::getInstance();
+    auto* waveBank = sectionHeap != nullptr
+        ? sectionHeap->getWaveBankTable().getWaveBank(1) : nullptr;
+    auto* waveArc = waveBank != nullptr ? waveBank->getWaveArc(wave) : nullptr;
+    return waveArc != nullptr && waveArc->load(nullptr);
+}
+
+bool prepare_sit_music_scene_waves(const SitMusicWaveMapping* mapping) {
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sequenceManager = audioManager != nullptr
+        ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
+    auto* sceneManager = audioManager != nullptr
+        ? static_cast<Z2SceneMgr*>(audioManager) : nullptr;
+    if (sequenceManager == nullptr || sceneManager == nullptr) {
+        return false;
+    }
+
+    auto* sectionHeap = JAUSectionHeap::getInstance();
+    auto* waveBank = sectionHeap != nullptr
+        ? sectionHeap->getWaveBankTable().getWaveBank(1) : nullptr;
+    if (waveBank == nullptr) {
+        return false;
+    }
+
+    if (!g_sitMusicWaveSnapshot.active) {
+        g_sitMusicWaveSnapshot.active = true;
+        g_sitMusicWaveSnapshot.requestWave1 = sceneManager->requestBgmWave_1;
+        g_sitMusicWaveSnapshot.requestWave2 = sceneManager->requestBgmWave_2;
+        g_sitMusicWaveSnapshot.loadedWave1 = sceneManager->loadedBgmWave_1;
+        g_sitMusicWaveSnapshot.loadedWave2 = sceneManager->loadedBgmWave_2;
+        g_sitMusicWaveSnapshot.mainTrack = sequenceManager->getMainBgmID();
+        g_sitMusicWaveSnapshot.mainStatus = sequenceManager->mBgmStatus;
+        set_sit_music_battle_override(sequenceManager);
+        if (sequenceManager->mMainBgmHandle) {
+            sequenceManager->mMainBgmHandle->stop(0);
+            sequenceManager->mMainBgmHandle.releaseSound();
+        }
+        sequenceManager->mMainBgmMaster.forceOut();
+    }
+
+    sequenceManager->mFlags.mBattleBgmOff = true;
+    sequenceManager->mBattleSeqCount = 0;
+    if (g_sitMusicWaveTrack == mapping->track) {
+        return true;
+    }
+
+    const u8 sceneWaves[] = {
+        g_sitMusicWaveSnapshot.loadedWave1,
+        g_sitMusicWaveSnapshot.loadedWave2,
+    };
+    for (u8 wave : sceneWaves) {
+        if (wave == 0 || sit_music_mapping_uses_wave(mapping, wave)) {
+            continue;
+        }
+        const s32 status = sceneManager->getBgmLoadStatus(wave);
+        if (status == 1) {
+            return false;
+        }
+        if (status == 2 && !sceneManager->eraseBgmWave(wave)) {
+            report_sit_music_wave_failure(mapping->track, wave, "release");
+            return false;
+        }
+        if (sceneManager->loadedBgmWave_1 == wave) {
+            sceneManager->loadedBgmWave_1 = 0;
+        }
+        if (sceneManager->loadedBgmWave_2 == wave) {
+            sceneManager->loadedBgmWave_2 = 0;
+        }
+    }
+    sceneManager->requestBgmWave_1 = 0;
+    sceneManager->requestBgmWave_2 = 0;
+    g_sitMusicWaveTrack = mapping->track;
+    return true;
+}
+
 bool prepare_sit_music_waves(u32 track) {
     const SitMusicWaveMapping* mapping = sit_music_wave_mapping(track);
     if (mapping == nullptr) {
@@ -3731,19 +3931,30 @@ bool prepare_sit_music_waves(u32 track) {
         return false;
     }
 
-    auto* sceneManager = Z2GetSceneMgr();
-    if (sceneManager == nullptr) {
+    if (!prepare_sit_music_scene_waves(mapping)) {
         return false;
     }
 
-    const u8 waves[] = {mapping->wave1, mapping->alternateWave1, mapping->wave2};
-    for (const u8 wave : waves) {
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sceneManager = audioManager != nullptr
+        ? static_cast<Z2SceneMgr*>(audioManager) : nullptr;
+    if (sceneManager == nullptr) {
+        return false;
+    }
+    u8 wave1 = g_sitMusicResolvedWave1 != 0
+        ? g_sitMusicResolvedWave1 : mapping->wave1;
+    const u8 wave2 = mapping->wave2;
+    const u8 waves[] = {wave1, wave2};
+    for (u8 wave : waves) {
         if (wave == 0) {
             continue;
         }
 
-        const s32 status = sceneManager->getBgmLoadStatus(wave);
+        s32 status = sceneManager->getBgmLoadStatus(wave);
         if (status == 2) {
+            if (wave == wave1) {
+                g_sitMusicResolvedWave1 = wave1;
+            }
             g_sitMusicWaveReleaseFrames[wave] = 0;
             g_sitMusicWaveReleaseScheduled[wave] = false;
             continue;
@@ -3752,16 +3963,65 @@ bool prepare_sit_music_waves(u32 track) {
             return false;
         }
 
-        if (!sceneManager->loadBgmWave(wave)) {
+        if (!load_sit_music_wave(sceneManager, wave)) {
+            const s32 loadStatus = sceneManager->getBgmLoadStatus(wave);
+            if (loadStatus == 1) {
+                g_sitMusicOwnedWaves[wave] = true;
+                if (wave == wave1) {
+                    g_sitMusicResolvedWave1 = wave1;
+                }
+                return false;
+            }
+            if (loadStatus == 2) {
+                if (wave == wave1) {
+                    g_sitMusicResolvedWave1 = wave1;
+                }
+                continue;
+            }
+            if (wave == wave1 && mapping->alternateWave1 != 0 &&
+                wave != mapping->alternateWave1)
+            {
+                wave1 = mapping->alternateWave1;
+                g_sitMusicResolvedWave1 = wave1;
+                status = sceneManager->getBgmLoadStatus(wave1);
+                if (status == 2) {
+                    continue;
+                }
+                if (status == 1) {
+                    return false;
+                }
+                if (!load_sit_music_wave(sceneManager, wave1)) {
+                    const s32 fallbackStatus =
+                        sceneManager->getBgmLoadStatus(wave1);
+                    if (fallbackStatus == 1) {
+                        g_sitMusicOwnedWaves[wave1] = true;
+                        return false;
+                    }
+                    if (fallbackStatus == 2) {
+                        continue;
+                    }
+                    report_sit_music_wave_failure(track, wave1, "load");
+                    return false;
+                }
+                g_sitMusicOwnedWaves[wave1] = true;
+                return false;
+            }
             report_sit_music_wave_failure(track, wave, "load");
             return false;
         }
         g_sitMusicOwnedWaves[wave] = true;
+        if (wave == wave1) {
+            g_sitMusicResolvedWave1 = wave1;
+        }
         g_sitMusicWaveReleaseFrames[wave] = 0;
         g_sitMusicWaveReleaseScheduled[wave] = false;
         return false;
     }
 
+    sceneManager->requestBgmWave_1 = wave1;
+    sceneManager->loadedBgmWave_1 = wave1;
+    sceneManager->requestBgmWave_2 = mapping->wave2;
+    sceneManager->loadedBgmWave_2 = mapping->wave2;
     return true;
 }
 
@@ -3778,7 +4038,13 @@ void schedule_sit_music_wave_releases(u32 activeTrack, u8 delayFrames) {
 }
 
 void update_sit_music_wave_cleanup() {
-    auto* sceneManager = Z2GetSceneMgr();
+    if (g_sitMusicWaveSnapshot.active) {
+        return;
+    }
+
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sceneManager = audioManager != nullptr
+        ? static_cast<Z2SceneMgr*>(audioManager) : nullptr;
     if (sceneManager == nullptr) {
         return;
     }
@@ -3787,10 +4053,14 @@ void update_sit_music_wave_cleanup() {
         ? sitMusicSelection()
         : 0;
     const u32 selectedTrack = selection > 0
-        ? expected_sit_music_bgm_id(
-              kFirstSitMusicBgmId + static_cast<u32>(selection - 1))
+        ? kFirstSitMusicBgmId + static_cast<u32>(selection - 1)
         : 0;
-    const SitMusicWaveMapping* selectedMapping = sit_music_wave_mapping(selectedTrack);
+    const u32 waveTrack = selectedTrack != 0
+        ? expected_sit_music_bgm_id(selectedTrack)
+        : 0;
+    const SitMusicWaveMapping* selectedMapping =
+        g_sitMusicReportedFailureTrack == selectedTrack
+            ? nullptr : sit_music_wave_mapping(waveTrack);
 
     for (u32 wave = 1; wave < g_sitMusicOwnedWaves.size(); ++wave) {
         if (!g_sitMusicOwnedWaves[wave]) {
@@ -3843,42 +4113,80 @@ void update_sit_music_wave_cleanup() {
     }
 }
 
-bool start_sit_music_track(u32 selectedTrack) {
-    auto* sequenceManager = Z2GetSeqMgr();
+void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack);
+
+void start_sit_music_track(u32 selectedTrack) {
     auto* audioManager = Z2GetAudioMgr();
-    if (sequenceManager == nullptr || audioManager == nullptr) {
-        return false;
+    auto* sequenceManager = audioManager != nullptr
+        ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
+    if (sequenceManager == nullptr) {
+        return;
     }
 
     const u32 track = expected_sit_music_bgm_id(selectedTrack);
     if (!prepare_sit_music_waves(track)) {
-        return false;
+        return;
     }
+    set_sit_music_battle_override(sequenceManager);
 
-    if (track == Z2BGM_LAKE || track == Z2BGM_GAME_OVER) {
-        auto* soundManager = Z2GetSoundMgr();
-        if (soundManager == nullptr) {
-            return false;
-        }
-
-        save_and_disable_sit_music_modifiers(sequenceManager);
-        audioManager->unMuteSceneBgm(0);
-        sequenceManager->bgmStop(0, 0);
-        if (!soundManager->startSound(track, sequenceManager->getMainBgmHandle(), nullptr)) {
-            restore_sit_music_modifiers(sequenceManager);
-            return false;
-        }
-        sequenceManager->mBgmStatus = 0xff;
-        sequenceManager->mMainBgmMaster.fadeInFromOut(30);
-        schedule_sit_music_wave_releases(track, 30);
-        return true;
+    if (sequenceManager->mFanfareID == track) {
+        sequenceManager->mFanfareID = static_cast<JAISoundID>(-1);
     }
-
-    save_and_disable_sit_music_modifiers(sequenceManager);
-    audioManager->unMuteSceneBgm(0);
-    audioManager->bgmStart(track, 30, 0);
-    schedule_sit_music_wave_releases(track, 30);
-    return true;
+    if (sequenceManager->mFanfareHandle &&
+        sequenceManager->mFanfareHandle->getID() == track)
+    {
+        sequenceManager->mFanfareHandle->stop(0);
+        sequenceManager->mFanfareHandle.releaseSound();
+        sequenceManager->mFanfareCount = 0;
+    }
+    if (sequenceManager->mSubBgmHandle &&
+        sequenceManager->getSubBgmID() != track)
+    {
+        sequenceManager->mSubBgmHandle->stop(0);
+        sequenceManager->mSubBgmHandle.releaseSound();
+    }
+    bool started = false;
+    started = audioManager->mSoundMgr.startSound(
+        track, &sequenceManager->mSubBgmHandle, nullptr);
+    started = started && sequenceManager->getSubBgmID() == track;
+    if (started) {
+        sequenceManager->mSubBgmStatus = 0xff;
+        if (track == Z2BGM_HOLY_FOREST) {
+            for (u32 childTrack = 0; childTrack <= 3; ++childTrack) {
+                sequenceManager->setChildTrackVolume(
+                    &sequenceManager->mSubBgmHandle, childTrack, 1.0f, 0,
+                    -1.0f, -1.0f);
+            }
+            for (u32 childTrack = 4; childTrack <= 7; ++childTrack) {
+                sequenceManager->setChildTrackVolume(
+                    &sequenceManager->mSubBgmHandle, childTrack, 0.0f, 0,
+                    -1.0f, -1.0f);
+            }
+        }
+        sequenceManager->mSubBgmMaster.fadeInFromOut(
+            Z2Param::BGM_CROSS_FADEIN_TIME);
+        sequenceManager->mMainBgmMaster.fadeOut(
+            Z2Param::BGM_CROSS_FADEOUT_TIME);
+    }
+    if (!started) {
+        log_sit_music_start_failure(
+            selectedTrack, sit_music_playback_id(sequenceManager, track));
+        return;
+    }
+    sequenceManager->field_0xb8 = -1;
+    g_sitMusicActiveTrack = selectedTrack;
+    if (g_sitMusicLastStartedTrack != selectedTrack) {
+        char message[128];
+        const size_t trackIndex = selectedTrack - kFirstSitMusicBgmId;
+        const char* trackName = trackIndex < kSitMusicTrackCount
+            ? kSitMusicTrackNames[trackIndex] : "UNKNOWN";
+        std::snprintf(message, sizeof(message),
+                      "Sit music started: selection %u, %s (%08x)",
+                      static_cast<u32>(selectedTrack - kFirstSitMusicBgmId + 1),
+                      trackName, track);
+        svc_log->info(mod_ctx, message);
+        g_sitMusicLastStartedTrack = selectedTrack;
+    }
 }
 
 void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack) {
@@ -3891,109 +4199,261 @@ void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack) {
         ? kSitMusicTrackNames[trackIndex] : "UNKNOWN";
     char message[128];
     std::snprintf(message, sizeof(message),
-                  "Sit music %s (%08x) did not become the main sequence; active ID is %08x",
+                  "Sit music %s (%08x) could not start on its playback handle; active ID is %08x",
                   trackName, selectedTrack, activeTrack);
     svc_log->warn(mod_ctx, message);
     g_sitMusicReportedFailureTrack = selectedTrack;
 }
 
-void restore_sit_area_music() {
-    if (!g_sitMusicOverrideActive) {
-        auto* sequenceManager = Z2GetSeqMgr();
-        restore_sit_music_modifiers(sequenceManager);
-        g_sitMusicWaveFailureTrack = 0;
+void restore_sit_music_battle_override(Z2SeqMgr* sequenceManager) {
+    if (!g_sitMusicBattleOverrideActive || sequenceManager == nullptr) {
         return;
     }
 
-    auto* sceneManager = Z2GetAudioMgr();
-    if (sceneManager == nullptr) {
-        return;
+    sequenceManager->mBattleSeqCount = 0;
+    sequenceManager->mBattleSeqState = 0;
+    sequenceManager->setBattleBgmOff(g_sitMusicOriginalBattleBgmOff);
+    g_sitMusicBattleOverrideActive = false;
+}
+
+bool restore_sit_music_scene_waves() {
+    if (!g_sitMusicWaveSnapshot.active) {
+        auto* audioManager = Z2GetAudioMgr();
+        auto* sequenceManager = audioManager != nullptr
+            ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
+        restore_sit_music_battle_override(sequenceManager);
+        return true;
     }
 
-    auto* sequenceManager = Z2GetSeqMgr();
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sequenceManager = audioManager != nullptr
+        ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
+    auto* sceneManager = audioManager != nullptr
+        ? static_cast<Z2SceneMgr*>(audioManager) : nullptr;
+    if (sequenceManager == nullptr || sceneManager == nullptr) {
+        return false;
+    }
+    auto* sectionHeap = JAUSectionHeap::getInstance();
+    auto* waveBank = sectionHeap != nullptr
+        ? sectionHeap->getWaveBankTable().getWaveBank(1) : nullptr;
+    if (waveBank == nullptr) {
+        return false;
+    }
+    for (u32 wave = 1; wave < g_sitMusicOwnedWaves.size(); ++wave) {
+        if (!g_sitMusicOwnedWaves[wave]) {
+            continue;
+        }
+
+        const s32 status = sceneManager->getBgmLoadStatus(wave);
+        if (status == 1) {
+            return false;
+        }
+        if (status == 2 && !sceneManager->eraseBgmWave(wave)) {
+            return false;
+        }
+        g_sitMusicOwnedWaves[wave] = false;
+        g_sitMusicWaveReleaseScheduled[wave] = false;
+        g_sitMusicWaveReleaseFrames[wave] = 0;
+    }
+
+    const u8 sceneWaves[] = {
+        g_sitMusicWaveSnapshot.loadedWave1,
+        g_sitMusicWaveSnapshot.loadedWave2,
+    };
+    for (u8 wave : sceneWaves) {
+        if (wave == 0) {
+            continue;
+        }
+
+        s32 status = sceneManager->getBgmLoadStatus(wave);
+        if (status == 0) {
+            if (!load_sit_music_wave(sceneManager, wave)) {
+                status = sceneManager->getBgmLoadStatus(wave);
+                if (status == 0) {
+                    if (!g_sitMusicRestoreFailureReported) {
+                        char message[96];
+                        std::snprintf(
+                            message, sizeof(message),
+                            "Could not reload original Sit music wave %02x",
+                            wave);
+                        svc_log->error(mod_ctx, message);
+                        g_sitMusicRestoreFailureReported = true;
+                    }
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        if (status == 1) {
+            return false;
+        }
+        if (status != 2) {
+            return false;
+        }
+    }
+
+    const SitMusicWaveSnapshot snapshot = g_sitMusicWaveSnapshot;
+    sceneManager->requestBgmWave_1 = snapshot.requestWave1;
+    sceneManager->requestBgmWave_2 = snapshot.requestWave2;
+    sceneManager->loadedBgmWave_1 = snapshot.loadedWave1;
+    sceneManager->loadedBgmWave_2 = snapshot.loadedWave2;
+
+    if (snapshot.mainTrack != static_cast<u32>(-1)) {
+        sequenceManager->bgmStart(
+            snapshot.mainTrack, Z2Param::BGM_CROSS_FADEIN_TIME, 0);
+        if (snapshot.mainStatus != 0xff) {
+            sequenceManager->changeBgmStatus(snapshot.mainStatus);
+        }
+    } else {
+        sequenceManager->mMainBgmMaster.fadeIn(
+            Z2Param::BGM_CROSS_FADEIN_TIME);
+    }
+    restore_sit_music_battle_override(sequenceManager);
+    g_sitMusicWaveSnapshot = {};
+    g_sitMusicWaveTrack = 0;
+    g_sitMusicResolvedWave1 = 0;
+    g_sitMusicRestoreFailureReported = false;
+    return true;
+}
+
+void stop_sit_music_track() {
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sequenceManager = audioManager != nullptr
+        ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
     if (sequenceManager == nullptr) {
         return;
     }
 
-    restore_sit_music_modifiers(sequenceManager);
-    sceneManager->sceneBgmStart();
-    schedule_sit_music_wave_releases(0, 30);
-    g_sitMusicOverrideActive = false;
+    const u32 track = expected_sit_music_bgm_id(g_sitMusicActiveTrack);
+    if (track != 0 && sequenceManager->mFanfareID == track) {
+        sequenceManager->mFanfareID = static_cast<JAISoundID>(-1);
+    }
+    if (track != 0 && sequenceManager->mFanfareHandle &&
+        sequenceManager->mFanfareHandle->getID() == track)
+    {
+        sequenceManager->mFanfareHandle->stop(15);
+        sequenceManager->mFanfareHandle.releaseSound();
+        sequenceManager->mFanfareCount = 0;
+        sequenceManager->mFanfareMute.fadeIn(15);
+    }
+    if (track != 0) {
+        if (sequenceManager->getSubBgmID() == track) {
+            sequenceManager->mSubBgmHandle->stop(15);
+            sequenceManager->mSubBgmHandle.releaseSound();
+        }
+        sequenceManager->mSubBgmMaster.fadeOut(15);
+        if (!g_sitMusicWaveSnapshot.active) {
+            sequenceManager->mMainBgmMaster.fadeIn(15);
+        }
+        sequenceManager->field_0xb8 = -1;
+    }
+    if (!g_sitMusicWaveSnapshot.active) {
+        schedule_sit_music_wave_releases(0, 30);
+        restore_sit_music_battle_override(sequenceManager);
+    }
     g_sitMusicActiveTrack = 0;
-    g_sitMusicReportedFailureTrack = 0;
-    g_sitMusicWaveFailureTrack = 0;
 }
 
 void update_sit_music() {
     update_sit_music_wave_cleanup();
     if (g_sitActionState != SitActionState::Seated) {
-        restore_sit_area_music();
+        stop_sit_music_track();
+        restore_sit_music_scene_waves();
+        g_sitMusicReportedFailureTrack = 0;
+        g_sitMusicWaveFailureTrack = 0;
         return;
     }
 
     const int64_t selection = sitMusicSelection();
+    if (selection != g_sitMusicLastLoggedSelection) {
+        g_sitMusicLastLoggedSelection = selection;
+        if (selection == 0) {
+            svc_log->info(mod_ctx, "Sit music selector read: Default (Area Music)");
+        } else {
+            const u32 selectedTrack =
+                kFirstSitMusicBgmId + static_cast<u32>(selection - 1);
+            const size_t trackIndex = selectedTrack - kFirstSitMusicBgmId;
+            char message[128];
+            std::snprintf(message, sizeof(message),
+                          "Sit music selector read: index %u, %s (%08x)",
+                          static_cast<u32>(selection),
+                          trackIndex < kSitMusicTrackCount
+                              ? kSitMusicTrackNames[trackIndex] : "UNKNOWN",
+                          selectedTrack);
+            svc_log->info(mod_ctx, message);
+        }
+    }
     if (selection == 0) {
-        restore_sit_area_music();
-        return;
-    }
-
-    auto* sequenceManager = Z2GetSeqMgr();
-    if (sequenceManager == nullptr || Z2GetAudioMgr() == nullptr) {
-        return;
-    }
-
-    const u32 track = kFirstSitMusicBgmId + static_cast<u32>(selection - 1);
-    if (g_sitMusicWaveFailureTrack != track) {
-        g_sitMusicWaveFailureTrack = 0;
-    }
-    if (g_sitMusicOverrideActive && g_sitMusicActiveTrack == track) {
-        return;
-    }
-
-    if (!start_sit_music_track(track)) {
-        return;
-    }
-    g_sitMusicOverrideActive = true;
-    g_sitMusicActiveTrack = track;
-    if (sequenceManager->getMainBgmID() == expected_sit_music_bgm_id(track)) {
+        stop_sit_music_track();
+        restore_sit_music_scene_waves();
         g_sitMusicReportedFailureTrack = 0;
-    } else {
-        log_sit_music_start_failure(track, sequenceManager->getMainBgmID());
-    }
-}
-
-void enforce_sit_music_after_audio_framework(ModContext*, void* args, void*, void*) {
-    const int64_t selection = sitMusicSelection();
-    if (g_sitActionState != SitActionState::Seated || selection == 0) {
+        g_sitMusicWaveFailureTrack = 0;
         return;
     }
 
-    auto* sequenceManager = mods::arg<Z2SeqMgr*>(args, 0);
+    auto* audioManager = Z2GetAudioMgr();
+    auto* sequenceManager = audioManager != nullptr
+        ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
     if (sequenceManager == nullptr) {
+        if (!g_sitMusicAudioManagerUnavailableReported) {
+            svc_log->error(mod_ctx, "game audio manager is unavailable for Sit music");
+            g_sitMusicAudioManagerUnavailableReported = true;
+        }
         return;
+    }
+    g_sitMusicAudioManagerUnavailableReported = false;
+    if (g_sitMusicBattleOverrideActive) {
+        sequenceManager->setBattleBgmOff(true);
+        sequenceManager->mBattleSeqCount = 0;
     }
 
     const u32 track = kFirstSitMusicBgmId + static_cast<u32>(selection - 1);
-    if (sequenceManager->getMainBgmID() == expected_sit_music_bgm_id(track)) {
-        g_sitMusicOverrideActive = true;
-        g_sitMusicActiveTrack = track;
-        g_sitMusicReportedFailureTrack = 0;
+    const u32 expectedTrack = expected_sit_music_bgm_id(track);
+    if (g_sitMusicWaveSnapshot.active && g_sitMusicWaveTrack != track) {
+        stop_sit_music_track();
+        restore_sit_music_scene_waves();
         return;
     }
-
+    if (g_sitMusicActiveTrack != 0 && g_sitMusicActiveTrack != track) {
+        stop_sit_music_track();
+        if (g_sitMusicWaveSnapshot.active) {
+            restore_sit_music_scene_waves();
+            return;
+        }
+    }
     if (g_sitMusicWaveFailureTrack != track) {
         g_sitMusicWaveFailureTrack = 0;
     }
-    if (!start_sit_music_track(track)) {
+    if (g_sitMusicReportedFailureTrack != track) {
+        g_sitMusicReportedFailureTrack = 0;
+    }
+    if (g_sitMusicReportedFailureTrack == track ||
+        g_sitMusicWaveFailureTrack == track)
+    {
+        stop_sit_music_track();
+        restore_sit_music_scene_waves();
         return;
     }
-    g_sitMusicOverrideActive = true;
-    g_sitMusicActiveTrack = track;
-    if (sequenceManager->getMainBgmID() == expected_sit_music_bgm_id(track)) {
-        g_sitMusicReportedFailureTrack = 0;
-    } else {
-        log_sit_music_start_failure(track, sequenceManager->getMainBgmID());
+    if (g_sitMusicActiveTrack == track &&
+        sit_music_playback_id(sequenceManager, expectedTrack) == expectedTrack)
+    {
+        return;
     }
+    if (g_sitMusicActiveTrack == track) {
+        g_sitMusicActiveTrack = 0;
+        if (g_sitMusicReportedOverrideTrack != track) {
+            char message[128];
+            std::snprintf(message, sizeof(message),
+                          "Sit music handle changed after start: expected %08x, got %08x",
+                          expectedTrack,
+                          sit_music_playback_id(sequenceManager, expectedTrack));
+            svc_log->warn(mod_ctx, message);
+            g_sitMusicReportedOverrideTrack = track;
+        }
+    }
+
+    start_sit_music_track(track);
 }
 
 void request_sit_action(daAlink_c* alink) {
@@ -4106,9 +4566,9 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     control.kind = UI_CONTROL_DROPDOWN;
     control.label = "Music while sitting";
     control.help_rml =
-        "Choose a game music track to play while Link is seated. Default (Area Music) leaves "
-        "the intended area soundtrack playing. The area soundtrack resumes when Link stands "
-        "or the Sit action ends.";
+        "Choose a game music sequence to play while Link is seated. Default (Area Music) "
+        "leaves the intended area soundtrack playing. The area soundtrack resumes when Link "
+        "stands or the Sit action ends.";
     control.binding = UI_BINDING_CONFIG_VAR;
     control.config_var = g_sitMusicTrack;
     control.options = g_sitMusicOptionLabels.data();
@@ -4658,7 +5118,6 @@ DEFINE_HOOK(&daArrow_c::draw, ArrowDraw);
 DEFINE_HOOK(&mDoExt_morf_c::frameUpdate, MorfFrameUpdate);
 DEFINE_HOOK(&fpcLf_Execute, LeafExecute);
 DEFINE_HOOK(&cCcS::Set, CollisionSet);
-DEFINE_HOOK(&Z2SeqMgr::processBgmFramework, ProcessBgmFramework);
 DEFINE_HOOK(&daAlink_c::modelDraw, ModelDraw);
 DEFINE_HOOK(&J3DMaterial::makeDisplayList, MaterialMakeDisplayList);
 DEFINE_HOOK(&J3DMaterial::diff, MaterialDiff);
@@ -4759,7 +5218,6 @@ ModResult install_hooks() {
     ADD_PRE(CheckSceneChange, suppress_submerged_water_exit);
     ADD_POST(ModelCalc, reapply_tunic_override_after_model_calc);
     ADD_PRE(ModelCalc, offset_sit_model_forward_before_calc);
-    ADD_POST(ProcessBgmFramework, enforce_sit_music_after_audio_framework);
     ADD_PRE(ModelDraw, mark_dark_link_model_for_draw);
     ADD_POST(LightTevColorTypeMaji, reapply_tunic_override_after_lighting);
     ADD_POST(LightTevColorTypeMaji, apply_dark_link_after_lighting);
@@ -4789,10 +5247,19 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_iceArrowSelected = false;
     g_iceArrowFrozenTargets.fill({});
     g_sitActionState = SitActionState::Inactive;
+    g_sitMusicActiveTrack = 0;
+    g_sitMusicLastStartedTrack = 0;
+    g_sitMusicReportedOverrideTrack = 0;
+    g_sitMusicLastLoggedSelection = -1;
+    g_sitMusicConfigReadFailureReported = false;
+    g_sitMusicAudioManagerUnavailableReported = false;
+    g_sitMusicReportedFailureTrack = 0;
+    g_sitMusicWaveFailureTrack = 0;
     g_darkLinkDrawModelData = nullptr;
     g_darkLinkAppearanceModelData.fill(nullptr);
     g_darkLinkAppearanceModelDataCount = 0;
     g_secondaryItemInputHandled = false;
+    g_secondaryRingInterpolationErrorLogged = false;
 
     ConfigVarDesc config = CONFIG_VAR_DESC_INIT;
     config.name = "mapOpenDirection";
@@ -4968,7 +5435,7 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
             alink->setSingleAnimeBase(daAlink_c::ANM_WAIT);
         }
     }
-    restore_sit_area_music();
+    stop_sit_music_track();
     g_sitActionState = SitActionState::Inactive;
     if (g_robinSettingsWindow != 0) {
         svc_ui->window_close(mod_ctx, g_robinSettingsWindow);
@@ -4998,6 +5465,7 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_iceKeeseLoadFailed = false;
     g_pendingHawkGrassUse = nullptr;
     g_pendingHawkGrassButton = 0;
+    forget_secondary_ring_pose(g_secondaryRing);
     g_secondaryRing = nullptr;
     g_openingSecondaryRing = false;
     g_secondaryHudOwner = nullptr;
