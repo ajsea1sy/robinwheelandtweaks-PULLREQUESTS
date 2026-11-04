@@ -72,6 +72,7 @@ constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 2;
 constexpr f32 kSecondaryIconScale = 0.55f;
 constexpr f32 kSecondaryCursorScale = 0.5f;
 constexpr u32 kHoverLandingRecoveryFrames = 30;
+constexpr u32 kGoronLavaReturnDelayFrames = 5 * 30;
 constexpr size_t kItemTextureBufferSize = 0xC00;
 constexpr char kHoverBootsIconResource[] = "hover_boots_wings.bti";
 constexpr char kDarkLinkIconResource[] = "dark_link.bti";
@@ -373,6 +374,7 @@ UiWindowHandle g_robinSettingsWindow = 0;
 dMenu_Ring_c* g_secondaryRing = nullptr;
 bool g_openingSecondaryRing = false;
 bool g_goronTunicEquipped = false;
+u32 g_goronLavaContactFrames = 0;
 bool g_hoverBootsEquipped = false;
 bool g_darkLinkFormActive = false;
 SitActionState g_sitActionState = SitActionState::Inactive;
@@ -492,6 +494,13 @@ bool hoverBootsWaterWalkingEnabled() {
 
 bool hoverBootsAirwalkingEnabled() {
     return !hoverBootsWaterWalkingEnabled();
+}
+
+bool is_hover_boots_hovering(const daAlink_c* alink) {
+    return alink != nullptr && hoverBootsAirwalkingEnabled() && g_hoverBootsEquipped &&
+           g_hoverGroundHeightValid && g_hoverAtSurface &&
+           !alink->mLinkAcch.ChkGroundHit() && !alink->checkEventRun() &&
+           !alink->checkModeFlg(daAlink_c::MODE_SWIMMING);
 }
 
 bool rupeeMagnetEnabled() {
@@ -912,7 +921,20 @@ f32 get_lava_surface_y(const daAlink_c* alink) {
     return -G_CM3D_F_INF;
 }
 
-bool stabilize_lava_surface_contact(daAlink_c* alink) {
+bool is_goron_lava_surface_contact(const daAlink_c* alink) {
+    if (alink == nullptr || !alink->mLinkAcch.ChkGroundHit() ||
+        !is_lava_polygon_contact(alink))
+    {
+        return false;
+    }
+
+    const f32 surfaceY = get_lava_surface_y(alink);
+    return surfaceY != -G_CM3D_F_INF &&
+           alink->current.pos.y <= surfaceY + 1.0f &&
+           alink->current.pos.y >= surfaceY - alink->mHeight;
+}
+
+bool stabilize_lava_surface_contact(daAlink_c* alink, bool resetSinkOffset) {
     if (!is_lava_polygon_contact(alink)) {
         return false;
     }
@@ -940,8 +962,24 @@ bool stabilize_lava_surface_contact(daAlink_c* alink) {
     alink->mGndPolyAtt0 = 3;
     alink->mGndPolyAtt1 = 1;
     alink->mGroundCode = 3;
-    alink->mSinkShapeOffset = 0.0f;
+    if (resetSinkOffset) {
+        alink->mSinkShapeOffset = 0.0f;
+    }
     return true;
+}
+
+void update_goron_lava_contact_timer() {
+    auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    if (!g_goronTunicEquipped || infiniteLavaWalkEnabled() || alink == nullptr ||
+        alink->checkEventRun() || !is_goron_lava_surface_contact(alink))
+    {
+        g_goronLavaContactFrames = 0;
+        return;
+    }
+
+    if (g_goronLavaContactFrames < kGoronLavaReturnDelayFrames) {
+        ++g_goronLavaContactFrames;
+    }
 }
 
 void stop_hover_magic_effects() {
@@ -1418,6 +1456,7 @@ void move_secondary_ring(dMenu_Ring_c* ring) {
         }
         if (!secondaryTunicAssigned(0) && !secondaryTunicAssigned(1)) {
             g_goronTunicEquipped = false;
+            g_goronLavaContactFrames = 0;
         }
         if (!secondaryHoverBootsAssigned(0) && !secondaryHoverBootsAssigned(1)) {
             clear_hover_water_ground_plane();
@@ -2071,7 +2110,7 @@ HookAction prevent_lava_return(ModContext*, void* args, void* retval, void*) {
     }
 
     if (infiniteLavaWalkEnabled() && g_goronTunicEquipped &&
-        stabilize_lava_surface_contact(alink))
+        stabilize_lava_surface_contact(alink, true))
     {
         *static_cast<BOOL*>(retval) = TRUE;
         return HOOK_SKIP_ORIGINAL;
@@ -2081,6 +2120,20 @@ HookAction prevent_lava_return(ModContext*, void* args, void* retval, void*) {
         // Heavy armor promotes lava's sink attribute to quicksand's value,
         // whose return initializer assumes a sand-only transform buffer.
         alink->mGndPolyAtt1 = 1;
+    }
+
+    return HOOK_CONTINUE;
+}
+
+HookAction delay_goron_lava_return(ModContext*, void* args, void* retval, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    const BOOL isSandReturn = mods::arg<BOOL>(args, 1);
+    if (alink != nullptr && !isSandReturn && g_goronTunicEquipped &&
+        !infiniteLavaWalkEnabled() && is_goron_lava_surface_contact(alink) &&
+        g_goronLavaContactFrames < kGoronLavaReturnDelayFrames)
+    {
+        *static_cast<int*>(retval) = 0;
+        return HOOK_SKIP_ORIGINAL;
     }
 
     return HOOK_CONTINUE;
@@ -2102,6 +2155,13 @@ void maintain_hover_height(ModContext*, void* args, void*, void*) {
     }
 
     if (g_hoverLandingSequenceActive && alink->mProcID == daAlink_c::PROC_LAND) {
+        return;
+    }
+
+    if (g_sitActionState == SitActionState::Seated && is_hover_boots_hovering(alink)) {
+        alink->current.pos.y = g_hoverGroundHeight;
+        alink->speed.y = 0.0f;
+        g_hoverLandingSequenceActive = false;
         return;
     }
 
@@ -2219,7 +2279,7 @@ void treat_lava_as_surface(ModContext*, void* args, void*, void*) {
         return;
     }
 
-    stabilize_lava_surface_contact(alink);
+    stabilize_lava_surface_contact(alink, true);
 }
 
 bool is_hover_water_walk_active(const daAlink_c* alink) {
@@ -2416,15 +2476,20 @@ void treat_water_as_surface_with_hover_boots(ModContext*, void* args, void*, voi
 
 void maintain_lava_ground(ModContext*, void* args, void*, void*) {
     auto* alink = mods::arg<daAlink_c*>(args, 0);
-    if (!is_lava_polygon_contact(alink) ||
-        !alink->mLinkAcch.ChkGroundHit())
-    {
+    if (!is_lava_polygon_contact(alink)) {
         return;
     }
 
     if (infiniteLavaWalkEnabled() && g_goronTunicEquipped) {
-        stabilize_lava_surface_contact(alink);
-    } else if (alink->mGndPolyAtt1 == 2) {
+        stabilize_lava_surface_contact(alink, true);
+    } else if (g_goronTunicEquipped &&
+               g_goronLavaContactFrames < kGoronLavaReturnDelayFrames &&
+               stabilize_lava_surface_contact(alink, false))
+    {
+        if (alink->mGndPolyAtt1 == 2) {
+            alink->mGndPolyAtt1 = 1;
+        }
+    } else if (alink->mLinkAcch.ChkGroundHit() && alink->mGndPolyAtt1 == 2) {
         alink->mGndPolyAtt1 = 1;
     }
 }
@@ -2641,7 +2706,9 @@ void tint_goron_tunic(ModContext*, void* args, void*, void*) {
     }
 
     auto* alink = mods::arg<daAlink_c*>(args, 0);
-    if (alink == nullptr || alink->field_0x064C == nullptr) {
+    if (alink == nullptr || alink->getClothesChangeWaitTimer() != 0 ||
+        alink->field_0x064C == nullptr)
+    {
         return;
     }
 
@@ -2660,8 +2727,12 @@ void reapply_tunic_override_after_model_calc(ModContext*, void* args, void*, voi
     }
 
     auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (alink == nullptr || alink->getClothesChangeWaitTimer() != 0) {
+        return;
+    }
+
     auto* model = mods::arg<J3DModel*>(args, 1);
-    tint_goron_armor_model(alink, model != nullptr ? model->getModelData() : nullptr);
+    tint_goron_armor_model(alink, model == nullptr ? nullptr : model->getModelData());
 }
 
 void reapply_tunic_override_after_lighting(ModContext*, void* args, void*, void*) {
@@ -2670,6 +2741,10 @@ void reapply_tunic_override_after_lighting(ModContext*, void* args, void*, void*
     }
 
     auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    if (alink == nullptr || alink->getClothesChangeWaitTimer() != 0) {
+        return;
+    }
+
     auto* model = mods::arg<J3DModelData*>(args, 1);
     if (!is_link_clothing_model(alink, model)) {
         return;
@@ -3013,7 +3088,9 @@ HookAction apply_dark_link_material_before_display(ModContext*, void* args, void
 }
 
 bool tint_goron_material_for_draw(daAlink_c* alink, J3DMaterial* material) {
-    if (!g_goronTunicEquipped || alink == nullptr || material == nullptr) {
+    if (!g_goronTunicEquipped || alink == nullptr ||
+        alink->getClothesChangeWaitTimer() != 0 || material == nullptr)
+    {
         return false;
     }
 
@@ -3269,7 +3346,7 @@ void begin_secondary_hawk_grass_use(daAlink_c* alink, u8 button) {
 
 bool can_start_sit_action(const daAlink_c* alink) {
     return alink != nullptr && !alink->checkWolf() && !alink->checkEventRun() &&
-           alink->mLinkAcch.ChkGroundHit() &&
+           (alink->mLinkAcch.ChkGroundHit() || is_hover_boots_hovering(alink)) &&
            (alink->mProcID == daAlink_c::PROC_WAIT ||
             alink->mProcID == daAlink_c::PROC_MOVE ||
             alink->mProcID == daAlink_c::PROC_ATN_ACTOR_WAIT ||
@@ -3310,12 +3387,19 @@ void begin_sit_action(daAlink_c* alink) {
         return;
     }
 
+    const bool hovering = is_hover_boots_hovering(alink);
     g_sitOriginalShapeAngleX = alink->shape_angle.x;
     g_sitOriginalShapeAngleZ = alink->shape_angle.z;
     alink->procWaitInit();
     alink->mNormalSpeed = 0.0f;
     alink->speedF = 0.0f;
-    align_link_to_ground(alink);
+    if (hovering) {
+        alink->current.pos.y = g_hoverGroundHeight;
+        alink->speed.y = 0.0f;
+        alink->mSinkShapeOffset = 0.0f;
+    } else {
+        align_link_to_ground(alink);
+    }
     alink->setSingleAnimeBase(daAlink_c::ANM_WAIT_SIT);
     g_sitActionState = SitActionState::Seated;
 }
@@ -3361,15 +3445,25 @@ void update_sit_action() {
     }
 
     auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    const bool grounded = alink != nullptr && alink->mLinkAcch.ChkGroundHit();
+    const bool hovering = is_hover_boots_hovering(alink);
     if (alink == nullptr || alink->checkWolf() || alink->checkEventRun() ||
-        alink->mProcID != daAlink_c::PROC_WAIT ||
-        !alink->mLinkAcch.ChkGroundHit())
+        alink->mProcID != daAlink_c::PROC_WAIT || (!grounded && !hovering))
     {
         if (alink != nullptr) {
             restore_sit_shape_angles(alink);
             alink->mSinkShapeOffset = 0.0f;
         }
         g_sitActionState = SitActionState::Inactive;
+        return;
+    }
+
+    if (hovering) {
+        alink->current.pos.y = g_hoverGroundHeight;
+        alink->speed.y = 0.0f;
+        alink->mSinkShapeOffset = 0.0f;
+        alink->mNormalSpeed = 0.0f;
+        alink->speedF = 0.0f;
         return;
     }
 
@@ -3762,6 +3856,7 @@ void update_secondary_assigned_item_input(ModContext*, void* args, void*, void*)
         break;
     case kGoronTunicItemId:
         g_goronTunicEquipped = !g_goronTunicEquipped;
+        g_goronLavaContactFrames = 0;
         svc_log->info(mod_ctx, g_goronTunicEquipped ? "Goron Tunic equipped" :
                                                      "Goron Tunic unequipped");
         break;
@@ -4009,6 +4104,7 @@ DEFINE_HOOK(&dMeterMap_c::meter_map_move, MapMeterMove);
 DEFINE_HOOK(&dMeterMap_c::keyCheck, MapKeyCheck);
 DEFINE_HOOK(&dMeterMap_c::ctrlShowMap, MapShow);
 DEFINE_HOOK(&daAlink_c::checkRestartRoom, CheckRestartRoom);
+DEFINE_HOOK(&daAlink_c::procCoLavaReturnInit, ProcCoLavaReturnInit);
 DEFINE_HOOK(&daAlink_c::checkSceneChange, CheckSceneChange);
 DEFINE_HOOK(&daAlink_c::modelCalc, ModelCalc);
 DEFINE_HOOK(&Z2SeqMgr::processBgmFramework, ProcessBgmFramework);
@@ -4093,6 +4189,7 @@ ModResult install_hooks() {
     ADD_PRE(MapShow, begin_map_input);
     ADD_POST(MapShow, end_map_input);
     ADD_PRE(CheckRestartRoom, prevent_lava_return);
+    ADD_PRE(ProcCoLavaReturnInit, delay_goron_lava_return);
     ADD_PRE(CheckRestartRoom, suppress_water_surface_restart);
     ADD_PRE(CheckSceneChange, suppress_submerged_water_exit);
     ADD_POST(ModelCalc, reapply_tunic_override_after_model_calc);
@@ -4282,6 +4379,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     update_dark_link_form_blend();
     update_sit_action();
     update_sit_music();
+    update_goron_lava_contact_timer();
     update_hover_boots();
     update_hawk_grass_resource();
     update_spawned_hawk_cleanup();
@@ -4325,6 +4423,7 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_secondaryHudAssignmentsInitialized = false;
     g_secondaryHudRefreshPending.fill(false);
     g_goronTunicEquipped = false;
+    g_goronLavaContactFrames = 0;
     g_hoverBootsEquipped = false;
     g_darkLinkFormActive = false;
     g_darkLinkFormBlend = 0.0f;

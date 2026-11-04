@@ -29,7 +29,17 @@ The mod settings remain available in the Mods panel and can also be opened direc
 
 The menu also provides Rupee Magnet as an optional feature rather than a wheel item. Its radius defaults to 100% (300 game units, matching the game's existing rupee-return distance) and can be set from 50% (150 units) to 300% (900 units) in 25% steps. Lava walking, Twilight Ward, Hawk one-hit damage, Hover Boots water walking, and Rupee Magnet are off by default.
 
+When Goron Tunic lava walking is disabled, Link keeps the gradual lava sink and a five-second magma-return delay. The delay restarts if Link leaves the lava, so separate contacts do not accumulate time.
+
 The secondary wheel's close behavior matches the vanilla wheel, including restoring background music and sound-effect levels when the wheel closes.
+
+## Sit While Hovering
+
+With airwalking Hover Boots equipped, Sit can be started from the stable hover plane as well as from the ground. Link stays suspended at that height while seated; standing returns him to movement without dropping him.
+
+## Goron Tunic Armor Changes
+
+The Goron Tunic tint pauses while the game's armor-change animation is replacing Link's clothing models, then resumes once the new models are ready.
 
 ## License
 
