@@ -10,15 +10,18 @@
 #include "JSystem/J3DGraphBase/J3DShapeDraw.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "JSystem/J3DGraphBase/J3DTexture.h"
+#include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/J2DGraph/J2DGrafContext.h"
 #include "JSystem/J2DGraph/J2DPicture.h"
 #include "JSystem/J2DGraph/J2DTextBox.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
 #include "JSystem/JUtility/JUTNameTab.h"
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_arrow.h"
 #include "d/d_a_item_static.h"
 #include "d/actor/d_a_npc_tk.h"
 #include "SSystem/SComponent/c_cc_d.h"
+#include "SSystem/SComponent/c_cc_s.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_lib.h"
 #include "d/d_meter2.h"
@@ -29,6 +32,7 @@
 #include "d/d_meter_map.h"
 #include "d/d_meter2_info.h"
 #include "d/d_meter_HIO.h"
+#include "d/d_kankyo.h"
 #include "d/d_pane_class.h"
 #include "d/d_select_cursor.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
@@ -36,6 +40,7 @@
 #include "Z2AudioLib/Z2SeqMgr.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_name.h"
+#include "f_pc/f_pc_leaf.h"
 #include "m_Do/m_Do_controller_pad.h"
 #include "m_Do/m_Do_ext.h"
 
@@ -66,6 +71,7 @@ constexpr u8 kGoronTunicItemId = 0xFB;
 constexpr u8 kHawkGrassItem = 0xFD;
 constexpr u8 kHoverBootsItem = 0xFC;
 constexpr u8 kDarkLinkItem = 0xFA;
+constexpr u8 kIceArrowItem = 0xF8;
 constexpr u8 kSecondarySlotBase = 0x80;
 constexpr int kHawkGrassIconTexture = 0x59;
 constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 2;
@@ -73,9 +79,15 @@ constexpr f32 kSecondaryIconScale = 0.55f;
 constexpr f32 kSecondaryCursorScale = 0.5f;
 constexpr u32 kHoverLandingRecoveryFrames = 30;
 constexpr u32 kGoronLavaReturnDelayFrames = 5 * 30;
+constexpr u16 kIceArrowType = 3;
+constexpr u16 kIceArrowFreezeFrames = 90;
+constexpr u16 kIceKeeseModelResource = 13;
+constexpr f32 kIceKeeseArrowTipOffset = 95.0f;
+constexpr f32 kIceKeeseArrowScale = 0.3f;
 constexpr size_t kItemTextureBufferSize = 0xC00;
 constexpr char kHoverBootsIconResource[] = "hover_boots_wings.bti";
 constexpr char kDarkLinkIconResource[] = "dark_link.bti";
+constexpr char kIceArrowIconResource[] = "ice_arrow.bti";
 constexpr char kSitIconResource[] = "sit.bti";
 constexpr u8 kGoronTunicDisplayItem = dItemNo_WEAR_KOKIRI_e;
 constexpr u32 kHawkAttackType =
@@ -339,6 +351,7 @@ enum class SecondaryIconContext : u8 {
     HawkGrass,
     HoverBoots,
     DarkLink,
+    IceArrow,
 };
 
 enum class SitActionState : u8 {
@@ -399,6 +412,25 @@ struct DarkLinkDrawMaterialSnapshot {
 };
 std::array<DarkLinkDrawMaterialSnapshot, 64> g_darkLinkDrawMaterialSnapshots{};
 u16 g_darkLinkDrawMaterialSnapshotCount = 0;
+struct IceArrowFrozenTarget {
+    fpc_ProcID actorId = fpcM_ERROR_PROCESS_ID_e;
+    J3DModel* model = nullptr;
+    cXyz frozenPosition{};
+    csXyz frozenAngle{};
+    csXyz frozenShapeAngle{};
+    f32 originalGravity = 0.0f;
+    f32 originalMaxFallSpeed = 0.0f;
+    GXColorS10 originalTevColor{};
+    u16 framesRemaining = 0;
+    bool shaderColorCaptured = false;
+    bool active = false;
+};
+std::array<IceArrowFrozenTarget, 32> g_iceArrowFrozenTargets{};
+cCcD_Obj* g_iceArrowSuppressedAttackCollider = nullptr;
+fpc_ProcID g_iceArrowExecutingActorId = fpcM_ERROR_PROCESS_ID_e;
+fpc_ProcID g_iceArrowPreviousExecutingActorIds[16]{};
+u8 g_iceArrowActorExecuteDepth = 0;
+bool g_iceArrowSelected = false;
 bool g_secondaryItemInputHandled = false;
 bool g_hoverGroundHeightValid = false;
 bool g_hoverLandingSequenceActive = false;
@@ -424,10 +456,16 @@ bool g_hoverBootsTransitionPending = false;
 int g_keyWaitDepth = 0;
 int g_mapInputDepth = 0;
 request_of_phase_process_class g_hawkGrassPhase{};
+request_of_phase_process_class g_iceKeesePhase{};
+JKRExpHeap* g_iceKeeseHeap = nullptr;
+J3DModel* g_iceKeeseModel = nullptr;
 daAlink_c* g_pendingHawkGrassUse = nullptr;
 u8 g_pendingHawkGrassButton = 0;
 bool g_hawkGrassPhaseRequested = false;
 bool g_hawkGrassArchiveLoaded = false;
+bool g_iceKeesePhaseRequested = false;
+bool g_iceKeeseArchiveLoaded = false;
+bool g_iceKeeseLoadFailed = false;
 fpc_ProcID g_spawnedHawkId = fpcM_ERROR_PROCESS_ID_e;
 bool g_spawnedHawkAttackSeen = false;
 bool g_spawnedHawkReturnSeen = false;
@@ -439,6 +477,7 @@ std::array<u8, MAX_ITEM_SLOTS> g_secondarySlots = [] {
     slots[0] = kHawkGrassItem;
     slots[1] = kHoverBootsItem;
     slots[2] = kDarkLinkItem;
+    slots[3] = kIceArrowItem;
     return slots;
 }();
 std::array<u8, MAX_SELECT_ITEM> g_secondarySelectedItems = [] {
@@ -612,7 +651,7 @@ u8 secondaryDisplayItemForId(u8 itemId) {
     if (itemId == kGoronTunicItemId) {
         return kGoronTunicDisplayItem;
     }
-    if (itemId == kDarkLinkItem) {
+    if (itemId == kDarkLinkItem || itemId == kIceArrowItem) {
         return dItemNo_WOOD_STICK_e;
     }
     if (itemId == kHawkGrassItem || itemId == kHoverBootsItem) {
@@ -652,6 +691,12 @@ SecondaryIconContext secondaryIconContextForSlot(u8 slotId) {
         g_secondarySlots[slotId - kSecondarySlotBase] == kHoverBootsItem)
     {
         return SecondaryIconContext::HoverBoots;
+    }
+    if (slotId >= kSecondarySlotBase &&
+        slotId < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+        g_secondarySlots[slotId - kSecondarySlotBase] == kIceArrowItem)
+    {
+        return SecondaryIconContext::IceArrow;
     }
     return SecondaryIconContext::None;
 }
@@ -701,6 +746,50 @@ void update_hawk_grass_resource() {
     }
 }
 
+void update_ice_keese_resource() {
+    if ((!g_iceArrowSelected && !g_iceKeesePhaseRequested) ||
+        g_iceKeeseArchiveLoaded || g_iceKeeseLoadFailed)
+    {
+        return;
+    }
+
+    g_iceKeesePhaseRequested = true;
+    const cPhs_Step phase = dComIfG_resLoad(&g_iceKeesePhase, "E_ib");
+    if (phase == cPhs_COMPLEATE_e) {
+        g_iceKeeseArchiveLoaded = true;
+        auto* modelData = static_cast<J3DModelData*>(
+            dComIfG_getObjectRes("E_ib", kIceKeeseModelResource));
+        if (modelData == nullptr) {
+            svc_log->error(mod_ctx, "Failed to get the Ice Keese model resource");
+            g_iceKeeseLoadFailed = true;
+            return;
+        }
+
+        g_iceKeeseHeap = JKRExpHeap::create(0x40000, mDoExt_getGameHeap(), true);
+        if (g_iceKeeseHeap == nullptr) {
+            svc_log->error(mod_ctx, "Failed to create the Ice Keese model heap");
+            g_iceKeeseLoadFailed = true;
+            return;
+        }
+
+        JKRHeap* previousHeap = mDoExt_setCurrentHeap(g_iceKeeseHeap);
+        g_iceKeeseModel = mDoExt_J3DModel__create(modelData, 0x80000, 0x11000084);
+        mDoExt_setCurrentHeap(previousHeap);
+        if (g_iceKeeseModel == nullptr) {
+            mDoExt_destroyExpHeap(g_iceKeeseHeap);
+            g_iceKeeseHeap = nullptr;
+            svc_log->error(mod_ctx, "Failed to create the Ice Keese model");
+            g_iceKeeseLoadFailed = true;
+            return;
+        }
+
+        svc_log->info(mod_ctx, "Ice Keese arrow-tip model loaded");
+    } else if (phase == cPhs_ERROR_e || phase == cPhs_UNK3_e) {
+        svc_log->error(mod_ctx, "Failed to load the Ice Keese model archive");
+        g_iceKeeseLoadFailed = true;
+    }
+}
+
 const char* secondaryItemNameForSlot(u8 slotId) {
     if (slotId == kSitSlot) {
         return "Sit";
@@ -721,6 +810,9 @@ const char* secondaryItemNameForSlot(u8 slotId) {
         }
         if (item == kDarkLinkItem) {
             return "Dark Link Form";
+        }
+        if (item == kIceArrowItem) {
+            return "Ice Arrow (Bow)";
         }
     }
 
@@ -848,8 +940,7 @@ bool secondaryItemAssigned(int button) {
 }
 
 bool isValidSecondaryAssignment(int64_t slotId) {
-    return slotId == dItemNo_NONE_e || slotId == kSitSlot ||
-           slotId == kGoronTunicSlot ||
+    return slotId == dItemNo_NONE_e || slotId == kSitSlot || slotId == kGoronTunicSlot ||
            (slotId >= kSecondarySlotBase &&
             slotId < kSecondarySlotBase + MAX_ITEM_SLOTS);
 }
@@ -1421,6 +1512,47 @@ u8 closest_secondary_wheel_slot(s16 stickAngle) {
 
 void position_secondary_cursor(dMenu_Ring_c* ring);
 
+bool is_ice_arrow_slot(const dMenu_Ring_c* ring) {
+    if (ring == nullptr || ring->mCurrentSlot >= kSecondaryWheelSlotCount) {
+        return false;
+    }
+
+    const u8 selected = g_secondaryWheelSlotIds[ring->mCurrentSlot];
+    return selected >= kSecondarySlotBase &&
+           selected < kSecondarySlotBase + MAX_ITEM_SLOTS &&
+           g_secondarySlots[selected - kSecondarySlotBase] == kIceArrowItem;
+}
+
+bool can_use_ice_arrow_combo(const dMenu_Ring_c* ring) {
+    if (ring == nullptr || ring->mPlayerIsWolf) {
+        return false;
+    }
+
+    for (int button = 0; button < 2; ++button) {
+        const u8 mixItem = dComIfGs_getMixItemIndex(button);
+        if ((dComIfGs_getSelectItemIndex(button) == SLOT_4 &&
+             mixItem == dItemNo_NONE_e) ||
+            mixItem == SLOT_4)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void set_ice_arrow_selected(daAlink_c* player, bool selected) {
+    if (player == nullptr || g_iceArrowSelected == selected) {
+        return;
+    }
+
+    g_iceArrowSelected = selected;
+    if (player->mItemAcKeep.getActor() != nullptr) {
+        player->deleteArrow();
+        player->makeArrow();
+        player->setBowReloadAnime();
+    }
+}
+
 void move_secondary_ring(dMenu_Ring_c* ring) {
     if (ring->mStatus == dMenu_Ring_c::STATUS_WAIT &&
         ring->mpStick != nullptr &&
@@ -1435,13 +1567,26 @@ void move_secondary_ring(dMenu_Ring_c* ring) {
 
     if (ring->mCurrentSlot < kSecondaryWheelSlotCount) {
         const u8 selected = g_secondaryWheelSlotIds[ring->mCurrentSlot];
-        if (mDoCPd_c::getTrigX(PAD_1) != 0) {
+        const bool iceArrowSlot = is_ice_arrow_slot(ring);
+        auto* player = daAlink_getAlinkActorClass();
+        if (ring->mStatus == dMenu_Ring_c::STATUS_WAIT && iceArrowSlot &&
+            mDoCPd_c::getTrigR(PAD_1) != 0 &&
+            can_use_ice_arrow_combo(ring) && player != nullptr &&
+            !player->checkCanoeSlider())
+        {
+            const bool selectingIceArrow = !g_iceArrowSelected;
+            set_ice_arrow_selected(player, selectingIceArrow);
+            Z2GetAudioMgr()->seStart(
+                selectingIceArrow ? Z2SE_SY_ITEM_COMBINE_ON : Z2SE_SY_ITEM_COMBINE_OFF,
+                NULL, 0, 0, 1.0f, 1.0f, -1.0f, -1.0f, 0);
+        }
+        if (!iceArrowSlot && mDoCPd_c::getTrigX(PAD_1) != 0) {
             g_secondarySelectedItems[0] = selected;
             save_secondary_assignment(0, selected);
             ring->mXButtonSlot = ring->mCurrentSlot;
             ring->setSelectItem(0, secondaryDisplayItemForSlot(selected));
         }
-        if (mDoCPd_c::getTrigY(PAD_1) != 0) {
+        if (!iceArrowSlot && mDoCPd_c::getTrigY(PAD_1) != 0) {
             g_secondarySelectedItems[1] = selected;
             save_secondary_assignment(1, selected);
             ring->mYButtonSlot = ring->mCurrentSlot;
@@ -1471,6 +1616,7 @@ void move_secondary_ring(dMenu_Ring_c* ring) {
     }
     position_secondary_cursor(ring);
     set_secondary_ring_name(ring);
+    ring->setMixMessage();
 }
 
 void position_secondary_cursor(dMenu_Ring_c* ring) {
@@ -1582,6 +1728,18 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
     ring->mpCenterScreen->draw(ring->mCenterPosX, ring->mCenterPosY, grafPort);
     ring->mpMessageParent->setAlphaRate(ring->mAlphaRate);
     ring->mpScreen->draw(ring->mCenterPosX, ring->mCenterPosY, grafPort);
+    if (ring->mPikariFlashingSpeed > 0.0f) {
+        CPaneMgr paneMgr;
+        auto* buttonPane = ring->mpScreen->search(MULTI_CHAR('gr_btn'));
+        if (buttonPane != nullptr) {
+            const Vec pos = paneMgr.getGlobalVtxCenter(buttonPane, true, 0);
+            dMeter2Info_getMeterClass()->getMeterDrawPtr()->drawPikari(
+                pos.x, pos.y, &ring->mPikariFlashingSpeed, g_ringHIO.mPikariScale,
+                g_ringHIO.mPikariFrontOuter, g_ringHIO.mPikariFrontInner,
+                g_ringHIO.mPikariBackOuter, g_ringHIO.mPikariBackInner,
+                g_ringHIO.mPikariAnimSpeed, 2);
+        }
+    }
 
     std::array<std::array<J2DPicture*, 3>, MAX_ITEM_SLOTS> savedItemTextures{};
     for (int index = 0; index < MAX_ITEM_SLOTS; ++index) {
@@ -1845,6 +2003,30 @@ HookAction handle_secondary_ring_move_end(ModContext*, void* args, void* retval,
     return HOOK_SKIP_ORIGINAL;
 }
 
+HookAction show_ice_arrow_combo_on_prompt(ModContext*, void* args, void* retval, void*) {
+    auto* ring = mods::arg<dMenu_Ring_c*>(args, 0);
+    if (!isSecondaryRing(ring)) {
+        return HOOK_CONTINUE;
+    }
+
+    *static_cast<bool*>(retval) =
+        ring->mStatus == dMenu_Ring_c::STATUS_WAIT && is_ice_arrow_slot(ring) &&
+        !g_iceArrowSelected && can_use_ice_arrow_combo(ring);
+    return HOOK_SKIP_ORIGINAL;
+}
+
+HookAction show_ice_arrow_combo_off_prompt(ModContext*, void* args, void* retval, void*) {
+    auto* ring = mods::arg<dMenu_Ring_c*>(args, 0);
+    if (!isSecondaryRing(ring)) {
+        return HOOK_CONTINUE;
+    }
+
+    *static_cast<bool*>(retval) =
+        ring->mStatus == dMenu_Ring_c::STATUS_WAIT && is_ice_arrow_slot(ring) &&
+        g_iceArrowSelected && can_use_ice_arrow_combo(ring);
+    return HOOK_SKIP_ORIGINAL;
+}
+
 HookAction handle_secondary_ring_move(ModContext*, void* args, void*, void*) {
     auto* ring = mods::arg<dMenu_Ring_c*>(args, 0);
     if (!isSecondaryRing(ring)) {
@@ -1866,7 +2048,8 @@ HookAction handle_secondary_ring_draw(ModContext*, void* args, void*, void*) {
 void replace_secondary_custom_icon(ModContext*, void* args, void*, void*) {
     if ((g_secondaryIconContext != SecondaryIconContext::Sit &&
          g_secondaryIconContext != SecondaryIconContext::HoverBoots &&
-         g_secondaryIconContext != SecondaryIconContext::DarkLink) ||
+         g_secondaryIconContext != SecondaryIconContext::DarkLink &&
+         g_secondaryIconContext != SecondaryIconContext::IceArrow) ||
         mods::arg<u8>(args, 0) != dItemNo_WOOD_STICK_e)
     {
         return;
@@ -1875,9 +2058,11 @@ void replace_secondary_custom_icon(ModContext*, void* args, void*, void*) {
     const char* resourceName =
         g_secondaryIconContext == SecondaryIconContext::Sit
             ? kSitIconResource
-            : (g_secondaryIconContext == SecondaryIconContext::DarkLink
-                   ? kDarkLinkIconResource
-                   : kHoverBootsIconResource);
+            : (g_secondaryIconContext == SecondaryIconContext::IceArrow
+                   ? kIceArrowIconResource
+                   : (g_secondaryIconContext == SecondaryIconContext::DarkLink
+                          ? kDarkLinkIconResource
+                          : kHoverBootsIconResource));
     ResourceBuffer icon = RESOURCE_BUFFER_INIT;
     const ModResult result = svc_resource->load(mod_ctx, resourceName, &icon);
     if (result != MOD_OK || icon.data == nullptr || icon.size == 0) {
@@ -1939,7 +2124,8 @@ HookAction prepare_hover_boots_hud_icon(ModContext*, void* args, void*, void*) {
     g_secondaryIconContext = secondaryIconContextForSlot(slot);
     if (g_secondaryIconContext != SecondaryIconContext::Sit &&
         g_secondaryIconContext != SecondaryIconContext::HoverBoots &&
-        g_secondaryIconContext != SecondaryIconContext::DarkLink)
+        g_secondaryIconContext != SecondaryIconContext::DarkLink &&
+        g_secondaryIconContext != SecondaryIconContext::IceArrow)
     {
         mods::arg_ref<u8>(args, 2) = secondaryDisplayItemForSlot(slot);
         return HOOK_CONTINUE;
@@ -1956,9 +2142,11 @@ HookAction prepare_hover_boots_hud_icon(ModContext*, void* args, void*, void*) {
     const char* resourceName =
         g_secondaryIconContext == SecondaryIconContext::Sit
             ? kSitIconResource
-            : (g_secondaryIconContext == SecondaryIconContext::DarkLink
-                   ? kDarkLinkIconResource
-                   : kHoverBootsIconResource);
+            : (g_secondaryIconContext == SecondaryIconContext::IceArrow
+                   ? kIceArrowIconResource
+                   : (g_secondaryIconContext == SecondaryIconContext::DarkLink
+                          ? kDarkLinkIconResource
+                          : kHoverBootsIconResource));
     ResourceBuffer icon = RESOURCE_BUFFER_INIT;
     const ModResult result = svc_resource->load(mod_ctx, resourceName, &icon);
     if (result != MOD_OK || icon.data == nullptr || icon.size == 0) {
@@ -4035,6 +4223,358 @@ void open_robin_settings_window(ModContext* ctx, void*) {
     }
 }
 
+void clear_ice_arrow_target(IceArrowFrozenTarget& target, fopAc_ac_c* actor) {
+    if (target.shaderColorCaptured && actor != nullptr &&
+        target.actorId == fopAcM_GetID(actor))
+    {
+        actor->tevStr.TevColor.r = target.originalTevColor.r;
+        actor->tevStr.TevColor.g = target.originalTevColor.g;
+        actor->tevStr.TevColor.b = target.originalTevColor.b;
+    }
+
+    if (actor != nullptr && target.actorId == fopAcM_GetID(actor)) {
+        actor->gravity = target.originalGravity;
+        actor->maxFallSpeed = target.originalMaxFallSpeed;
+    }
+
+    target.active = false;
+    target.shaderColorCaptured = false;
+    target.model = nullptr;
+    target.framesRemaining = 0;
+}
+
+bool is_ice_arrow_enemy_dead(fopAc_ac_c* actor) {
+    if (actor == nullptr || fopAcM_GetGroup(actor) != fopAc_ENEMY_e) {
+        return true;
+    }
+    const auto* enemy = static_cast<fopEn_enemy_c*>(actor);
+    return actor->health <= 0 || enemy->checkDeadFlg();
+}
+
+void register_ice_arrow_target(fopAc_ac_c* actor) {
+    if (actor == nullptr || fopAcM_GetGroup(actor) != fopAc_ENEMY_e ||
+        is_ice_arrow_enemy_dead(actor))
+    {
+        return;
+    }
+
+    IceArrowFrozenTarget* target = nullptr;
+    for (auto& entry : g_iceArrowFrozenTargets) {
+        if (entry.active && entry.actorId == fopAcM_GetID(actor)) {
+            target = &entry;
+            break;
+        }
+        if (!entry.active && target == nullptr) {
+            target = &entry;
+        }
+    }
+
+    if (target == nullptr) {
+        target = &g_iceArrowFrozenTargets[0];
+        for (auto& entry : g_iceArrowFrozenTargets) {
+            if (entry.framesRemaining < target->framesRemaining) {
+                target = &entry;
+            }
+        }
+    }
+
+    if (target->active && target->actorId != fopAcM_GetID(actor)) {
+        fopAc_ac_c* replacedActor = fopAcM_SearchByID(target->actorId);
+        clear_ice_arrow_target(*target, replacedActor);
+    }
+
+    if (!target->active) {
+        target->actorId = fopAcM_GetID(actor);
+        target->originalTevColor = actor->tevStr.TevColor;
+        target->shaderColorCaptured = true;
+        target->originalGravity = actor->gravity;
+        target->originalMaxFallSpeed = actor->maxFallSpeed;
+    }
+    target->actorId = fopAcM_GetID(actor);
+    target->model = actor->model;
+    target->frozenPosition = actor->current.pos;
+    target->frozenAngle = actor->current.angle;
+    target->frozenShapeAngle = actor->shape_angle;
+    target->framesRemaining = kIceArrowFreezeFrames;
+    target->active = true;
+    dComIfGp_particle_set(0, ID_AK_JN_ENEMYFREEZE00, &actor->current.pos, &actor->tevStr);
+}
+
+bool is_ice_arrow_actor_frozen(const fopAc_ac_c* actor) {
+    if (actor == nullptr) {
+        return false;
+    }
+    if (fopAcM_GetGroup(actor) != fopAc_ENEMY_e || actor->health <= 0 ||
+        static_cast<const fopEn_enemy_c*>(actor)->checkDeadFlg())
+    {
+        return false;
+    }
+
+    const fpc_ProcID actorId = fopAcM_GetID(actor);
+    for (const auto& target : g_iceArrowFrozenTargets) {
+        if (target.active && target.actorId == actorId) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool release_dead_ice_arrow_actor(fpc_ProcID actorId) {
+    for (auto& target : g_iceArrowFrozenTargets) {
+        if (!target.active || target.actorId != actorId) {
+            continue;
+        }
+
+        fopAc_ac_c* actor = fopAcM_SearchByID(actorId);
+        if (!is_ice_arrow_enemy_dead(actor)) {
+            return false;
+        }
+
+        clear_ice_arrow_target(target, actor);
+        return true;
+    }
+    return false;
+}
+
+void hold_ice_arrow_target_in_place(ModContext*, void* args, void*, void*) {
+    auto* leaf = mods::arg<leafdraw_class*>(args, 0);
+    if (leaf == nullptr) {
+        return;
+    }
+
+    auto* actor = reinterpret_cast<fopAc_ac_c*>(leaf);
+    const fpc_ProcID actorId = fopAcM_GetID(actor);
+    for (auto& target : g_iceArrowFrozenTargets) {
+        if (!target.active || target.actorId != actorId) {
+            continue;
+        }
+
+        if (is_ice_arrow_enemy_dead(actor)) {
+            clear_ice_arrow_target(target, actor);
+            return;
+        }
+
+        actor->current.pos = target.frozenPosition;
+        actor->current.angle = target.frozenAngle;
+        actor->old = actor->current;
+        actor->shape_angle = target.frozenShapeAngle;
+        actor->speed.set(0.0f, 0.0f, 0.0f);
+        actor->speedF = 0.0f;
+        actor->gravity = 0.0f;
+        return;
+    }
+}
+
+HookAction begin_ice_arrow_actor_execute(ModContext*, void* args, void*, void*) {
+    auto* leaf = mods::arg<leafdraw_class*>(args, 0);
+    if (leaf == nullptr ||
+        g_iceArrowActorExecuteDepth >=
+            sizeof(g_iceArrowPreviousExecutingActorIds) /
+                sizeof(g_iceArrowPreviousExecutingActorIds[0]))
+    {
+        return HOOK_CONTINUE;
+    }
+
+    g_iceArrowPreviousExecutingActorIds[g_iceArrowActorExecuteDepth++] =
+        g_iceArrowExecutingActorId;
+    g_iceArrowExecutingActorId =
+        fopAcM_GetID(reinterpret_cast<fopAc_ac_c*>(leaf));
+    return HOOK_CONTINUE;
+}
+
+void end_ice_arrow_actor_execute(ModContext*, void*, void*, void*) {
+    if (g_iceArrowActorExecuteDepth == 0) {
+        return;
+    }
+    g_iceArrowExecutingActorId =
+        g_iceArrowPreviousExecutingActorIds[--g_iceArrowActorExecuteDepth];
+}
+
+HookAction suppress_ice_frozen_enemy_attack(ModContext*, void* args, void*, void*) {
+    auto* collider = mods::arg<cCcD_Obj*>(args, 0);
+    if (collider == nullptr || !collider->ChkAtSet() ||
+        !is_ice_arrow_actor_frozen(collider->GetAc()))
+    {
+        return HOOK_CONTINUE;
+    }
+
+    collider->OffAtSetBit();
+    g_iceArrowSuppressedAttackCollider = collider;
+    return HOOK_CONTINUE;
+}
+
+void restore_ice_frozen_enemy_attack(ModContext*, void* args, void*, void*) {
+    auto* collider = mods::arg<cCcD_Obj*>(args, 0);
+    if (collider != nullptr && collider == g_iceArrowSuppressedAttackCollider) {
+        collider->OnAtSetBit();
+        g_iceArrowSuppressedAttackCollider = nullptr;
+    }
+}
+
+bool is_ice_arrow_target_model(J3DModel* model) {
+    if (model == nullptr) {
+        return false;
+    }
+
+    for (auto& target : g_iceArrowFrozenTargets) {
+        if (!target.active || target.model != model) {
+            continue;
+        }
+
+        fopAc_ac_c* actor = fopAcM_SearchByID(target.actorId);
+        if (is_ice_arrow_enemy_dead(actor)) {
+            clear_ice_arrow_target(target, actor);
+            continue;
+        }
+        target.model = actor->model;
+        return target.model == model;
+    }
+
+    return false;
+}
+
+HookAction update_ice_arrow_freezes(ModContext*, void* args, void*, void*) {
+    if (mods::arg<daAlink_c*>(args, 0) == nullptr) {
+        return HOOK_CONTINUE;
+    }
+
+    for (auto& target : g_iceArrowFrozenTargets) {
+        if (!target.active) {
+            continue;
+        }
+
+        fopAc_ac_c* actor = fopAcM_SearchByID(target.actorId);
+        if (is_ice_arrow_enemy_dead(actor) || target.framesRemaining <= 1) {
+            clear_ice_arrow_target(target, actor);
+            continue;
+        }
+
+        target.model = actor->model;
+        --target.framesRemaining;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction apply_ice_arrow_bow_selection(ModContext*, void* args, void*, void*) {
+    auto* player = mods::arg<daAlink_c*>(args, 0);
+    if (g_secondaryRing != nullptr) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+    if (player == nullptr || !g_iceArrowSelected || player->checkCanoeSlider()) {
+        return HOOK_CONTINUE;
+    }
+
+    const bool bowType =
+        player->mEquipItem == dItemNo_BOW_e ||
+        player->mEquipItem == dItemNo_BOMB_ARROW_e;
+    if (!bowType) {
+        return HOOK_CONTINUE;
+    }
+
+    player->setItemActionButtonStatus(BUTTON_STATUS_SWITCH);
+    if (!player->arrowChangeTrigger()) {
+        return HOOK_CONTINUE;
+    }
+
+    set_ice_arrow_selected(player, !g_iceArrowSelected);
+    return HOOK_SKIP_ORIGINAL;
+}
+
+void set_ice_arrow_actor_type_after_creation(ModContext*, void* args, void*, void*) {
+    auto* player = mods::arg<daAlink_c*>(args, 0);
+    if (!g_iceArrowSelected || player == nullptr) {
+        return;
+    }
+
+    fopAc_ac_c* actor = player->mItemAcKeep.getActor();
+    if (actor != nullptr && fopAcM_GetName(actor) == fpcNm_ARROW_e) {
+        static_cast<daArrow_c*>(actor)->mArrowType = kIceArrowType;
+    }
+}
+
+void draw_ice_keese_on_held_arrow(ModContext*, void* args, void*, void*) {
+    auto* arrow = mods::arg<daArrow_c*>(args, 0);
+    if (!g_iceArrowSelected || g_iceKeeseModel == nullptr || arrow == nullptr ||
+        arrow->mpModel == nullptr || arrow->mArrowType != kIceArrowType ||
+        !arrow->checkWait() || arrow->field_0x93f != 0 || arrow->field_0x942 != 0)
+    {
+        return;
+    }
+
+    mDoMtx_stack_c::copy(arrow->mpModel->getBaseTRMtx());
+    mDoMtx_stack_c::transM(0.0f, 0.0f, kIceKeeseArrowTipOffset);
+    mDoMtx_stack_c::scaleM(kIceKeeseArrowScale, kIceKeeseArrowScale,
+                           kIceKeeseArrowScale);
+    g_iceKeeseModel->setBaseTRMtx(mDoMtx_stack_c::get());
+
+    dKy_tevstr_c tevStr{};
+    g_env_light.settingTevStruct(0, &arrow->current.pos, &tevStr);
+    g_env_light.setLightTevColorType_MAJI(g_iceKeeseModel, &tevStr);
+    mDoExt_modelUpdateDL(g_iceKeeseModel);
+}
+
+HookAction register_ice_arrow_hit(ModContext*, void* args, void*, void*) {
+    auto* arrow = mods::arg<daArrow_c*>(args, 0);
+    auto* actor = mods::arg<fopAc_ac_c*>(args, 2);
+    auto* targetInfo = mods::arg<dCcD_GObjInf*>(args, 3);
+    if (arrow != nullptr && arrow->mArrowType == kIceArrowType &&
+        targetInfo != nullptr && !targetInfo->ChkTgShield() &&
+        !targetInfo->ChkTgArrowThrough())
+    {
+        register_ice_arrow_target(actor);
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction freeze_ice_arrow_target_animation(ModContext*, void* args, void*, void*) {
+    auto* morf = mods::arg<mDoExt_morf_c*>(args, 0);
+    if (morf == nullptr) {
+        return HOOK_CONTINUE;
+    }
+
+    if (release_dead_ice_arrow_actor(g_iceArrowExecutingActorId)) {
+        return HOOK_CONTINUE;
+    }
+
+    bool actorIsFrozen = false;
+    for (const auto& target : g_iceArrowFrozenTargets) {
+        if (target.active && target.actorId == g_iceArrowExecutingActorId) {
+            actorIsFrozen = true;
+            break;
+        }
+    }
+
+    return actorIsFrozen || is_ice_arrow_target_model(morf->mpModel)
+               ? HOOK_SKIP_ORIGINAL
+               : HOOK_CONTINUE;
+}
+
+void apply_ice_arrow_shader_after_tev_setup(ModContext*, void* args, void*, void*) {
+    auto* tevStr = mods::arg<dKy_tevstr_c*>(args, 3);
+    if (tevStr == nullptr) {
+        return;
+    }
+
+    for (const auto& target : g_iceArrowFrozenTargets) {
+        if (!target.active) {
+            continue;
+        }
+
+        fopAc_ac_c* actor = fopAcM_SearchByID(target.actorId);
+        if (actor == nullptr || &actor->tevStr != tevStr) {
+            continue;
+        }
+
+        daAlink_c* player = daAlink_getAlinkActorClass();
+        if (player != nullptr) {
+            tevStr->TevColor.r = player->getFreezeR();
+            tevStr->TevColor.g = player->getFreezeG();
+            tevStr->TevColor.b = player->getFreezeB();
+        }
+        return;
+    }
+}
+
 #define ADD_PRE(HookType, callback)                                                                \
     do {                                                                                           \
         const ModResult hookResult = mods::hook::add_pre<HookType>(callback);                      \
@@ -4057,6 +4597,8 @@ DEFINE_HOOK(&dMenu_Ring_c::openExplain, OpenExplain);
 DEFINE_HOOK(&dMenu_Ring_c::setNameString, SetNameString);
 DEFINE_HOOK(&dMenu_Ring_c::setSelectItem, RingSetSelectItem);
 DEFINE_HOOK(&dMenu_Ring_c::setJumpItem, RingSetJumpItem);
+DEFINE_HOOK(&dMenu_Ring_c::isMixItemOn, RingIsMixItemOn);
+DEFINE_HOOK(&dMenu_Ring_c::isMixItemOff, RingIsMixItemOff);
 DEFINE_HOOK(&dMeter2Draw_c::changeTextureItemXY, ChangeTextureItemXY);
 DEFINE_HOOK(&dMeter2_c::moveButtonXY, MeterMoveButtonXY);
 DEFINE_HOOK(&dMeter2Info_readItemTexture, ReadItemTexture);
@@ -4106,7 +4648,16 @@ DEFINE_HOOK(&dMeterMap_c::ctrlShowMap, MapShow);
 DEFINE_HOOK(&daAlink_c::checkRestartRoom, CheckRestartRoom);
 DEFINE_HOOK(&daAlink_c::procCoLavaReturnInit, ProcCoLavaReturnInit);
 DEFINE_HOOK(&daAlink_c::checkSceneChange, CheckSceneChange);
+DEFINE_HOOK(&daAlink_c::execute, PlayerExecute);
+DEFINE_HOOK(&daAlink_c::draw, PlayerDraw);
+DEFINE_HOOK(&daAlink_c::makeArrow, MakeArrow);
+DEFINE_HOOK(&daAlink_c::changeArrowType, ChangeArrowType);
 DEFINE_HOOK(&daAlink_c::modelCalc, ModelCalc);
+DEFINE_HOOK(&daArrow_c::atHitCallBack, ArrowAtHitCallBack);
+DEFINE_HOOK(&daArrow_c::draw, ArrowDraw);
+DEFINE_HOOK(&mDoExt_morf_c::frameUpdate, MorfFrameUpdate);
+DEFINE_HOOK(&fpcLf_Execute, LeafExecute);
+DEFINE_HOOK(&cCcS::Set, CollisionSet);
 DEFINE_HOOK(&Z2SeqMgr::processBgmFramework, ProcessBgmFramework);
 DEFINE_HOOK(&daAlink_c::modelDraw, ModelDraw);
 DEFINE_HOOK(&J3DMaterial::makeDisplayList, MaterialMakeDisplayList);
@@ -4118,6 +4669,7 @@ DEFINE_HOOK(&daAlink_c::setCylAtParam, CylinderAtParam);
 DEFINE_HOOK(static_cast<void (dScnKy_env_light_c::*)(J3DModelData*, dKy_tevstr_c*)>(
                 &dScnKy_env_light_c::setLightTevColorType_MAJI),
             LightTevColorTypeMaji);
+DEFINE_HOOK(&dScnKy_env_light_c::settingTevStruct, SettingTevStruct);
 DEFINE_HOOK(&daAlink_c::setWaterDropColor, SetWaterDropColor);
 DEFINE_HOOK(&daItem_c::_daItem_execute, ItemExecute);
 
@@ -4127,6 +4679,8 @@ ModResult install_hooks() {
     ADD_PRE(RingSetSelectItem, prepare_secondary_equip_icon);
     ADD_POST(RingSetSelectItem, finish_secondary_equip_icon);
     ADD_POST(RingSetJumpItem, clear_secondary_assignment_for_vanilla_ring);
+    ADD_PRE(RingIsMixItemOn, show_ice_arrow_combo_on_prompt);
+    ADD_PRE(RingIsMixItemOff, show_ice_arrow_combo_off_prompt);
     ADD_PRE(ChangeTextureItemXY, prepare_hover_boots_hud_icon);
     ADD_POST(ChangeTextureItemXY, tint_goron_tunic_hud_icon);
     ADD_POST(ChangeTextureItemXY, finish_hover_boots_hud_icon);
@@ -4189,6 +4743,17 @@ ModResult install_hooks() {
     ADD_PRE(MapShow, begin_map_input);
     ADD_POST(MapShow, end_map_input);
     ADD_PRE(CheckRestartRoom, prevent_lava_return);
+    ADD_PRE(PlayerExecute, update_ice_arrow_freezes);
+    ADD_POST(MakeArrow, set_ice_arrow_actor_type_after_creation);
+    ADD_POST(ArrowDraw, draw_ice_keese_on_held_arrow);
+    ADD_PRE(ChangeArrowType, apply_ice_arrow_bow_selection);
+    ADD_PRE(ArrowAtHitCallBack, register_ice_arrow_hit);
+    ADD_PRE(MorfFrameUpdate, freeze_ice_arrow_target_animation);
+    ADD_PRE(LeafExecute, begin_ice_arrow_actor_execute);
+    ADD_POST(LeafExecute, hold_ice_arrow_target_in_place);
+    ADD_POST(LeafExecute, end_ice_arrow_actor_execute);
+    ADD_PRE(CollisionSet, suppress_ice_frozen_enemy_attack);
+    ADD_POST(CollisionSet, restore_ice_frozen_enemy_attack);
     ADD_PRE(ProcCoLavaReturnInit, delay_goron_lava_return);
     ADD_PRE(CheckRestartRoom, suppress_water_surface_restart);
     ADD_PRE(CheckSceneChange, suppress_submerged_water_exit);
@@ -4198,6 +4763,7 @@ ModResult install_hooks() {
     ADD_PRE(ModelDraw, mark_dark_link_model_for_draw);
     ADD_POST(LightTevColorTypeMaji, reapply_tunic_override_after_lighting);
     ADD_POST(LightTevColorTypeMaji, apply_dark_link_after_lighting);
+    ADD_POST(SettingTevStruct, apply_ice_arrow_shader_after_tev_setup);
     ADD_PRE(MaterialMakeDisplayList, apply_dark_link_material_before_display);
     ADD_PRE(MaterialDiff, apply_dark_link_material_diff);
     ADD_PRE(ShapeDraw, apply_dark_link_terminal_output_before_shape_draw);
@@ -4220,6 +4786,8 @@ extern "C" {
 MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_darkLinkFormActive = false;
     g_darkLinkFormBlend = 0.0f;
+    g_iceArrowSelected = false;
+    g_iceArrowFrozenTargets.fill({});
     g_sitActionState = SitActionState::Inactive;
     g_darkLinkDrawModelData = nullptr;
     g_darkLinkAppearanceModelData.fill(nullptr);
@@ -4382,6 +4950,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     update_goron_lava_contact_timer();
     update_hover_boots();
     update_hawk_grass_resource();
+    update_ice_keese_resource();
     update_spawned_hawk_cleanup();
     return MOD_OK;
 }
@@ -4412,9 +4981,21 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     if (g_hawkGrassPhaseRequested) {
         dComIfG_resDelete(&g_hawkGrassPhase, "J_Tobi");
     }
+    if (g_iceKeeseHeap != nullptr) {
+        mDoExt_destroyExpHeap(g_iceKeeseHeap);
+        g_iceKeeseHeap = nullptr;
+        g_iceKeeseModel = nullptr;
+    }
+    if (g_iceKeesePhaseRequested) {
+        dComIfG_resDelete(&g_iceKeesePhase, "E_ib");
+    }
     g_hawkGrassPhase = {};
+    g_iceKeesePhase = {};
     g_hawkGrassPhaseRequested = false;
     g_hawkGrassArchiveLoaded = false;
+    g_iceKeesePhaseRequested = false;
+    g_iceKeeseArchiveLoaded = false;
+    g_iceKeeseLoadFailed = false;
     g_pendingHawkGrassUse = nullptr;
     g_pendingHawkGrassButton = 0;
     g_secondaryRing = nullptr;
@@ -4427,6 +5008,8 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_hoverBootsEquipped = false;
     g_darkLinkFormActive = false;
     g_darkLinkFormBlend = 0.0f;
+    g_iceArrowSelected = false;
+    g_iceArrowFrozenTargets.fill({});
     g_darkLinkDrawModelData = nullptr;
     g_secondaryItemInputHandled = false;
     g_hoverGroundHeightValid = false;
