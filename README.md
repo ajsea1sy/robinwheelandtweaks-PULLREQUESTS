@@ -1,6 +1,8 @@
 # RobinWheelAndTweaks
+## By RobinTheSoundsmith
+Quick Link: `urlvanish.com/robinwheel`
 
-Made by RobinTheSoundsmith. This Dusklight code mod adds a second item wheel with 24 mod-owned item slots and a separate Goron Tunic slot. It reuses the vanilla item-wheel presentation while handling slot identity, selection, movement, and rendering independently of vanilla inventory indexes. Hawk Grass is provided in the first secondary slot and Hover Boots in the second; both can be assigned to X or Y.
+This Dusklight code mod adds a second item wheel with 24 mod-owned item slots and a separate Goron Tunic slot. It reuses the vanilla item-wheel presentation while handling slot identity, selection, movement, and rendering independently of vanilla inventory indexes. Hawk Grass is provided in the first secondary slot and Hover Boots in the second; both can be assigned to X or Y.
 
 ## Repository contents
 
