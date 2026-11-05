@@ -384,6 +384,11 @@ DEFINE_HOOK(&daAlink_c::boardCommon, BoardCommon);
 DEFINE_HOOK(&daAlink_c::checkSnowCode, CheckSnowCode);
 DEFINE_HOOK(&daAlink_c::checkShieldDraw, CheckShieldDraw);
 DEFINE_HOOK(&daAlink_c::checkNextActionBow, CheckNextActionBow);
+DEFINE_HOOK(&daAlink_c::checkNotItemSinkLimit, CheckNotItemSinkLimit);
+DEFINE_HOOK(&daAlink_c::setBodyAngleXReadyAnime, SetBodyAngleXReadyAnime);
+#if TARGET_PC
+DEFINE_HOOK(&daAlink_c::checkAimContext, CheckAimContext);
+#endif
 DEFINE_HOOK(&daAlink_c::rideGetOff, RideGetOff);
 DEFINE_HOOK(&daAlink_c::checkWaitAction, CheckWaitAction);
 DEFINE_HOOK(&daAlink_c::procDamageInit, ProcDamageInit);
@@ -438,6 +443,7 @@ DEFINE_HOOK(&daAlink_c::changeArrowType, ChangeArrowType);
 DEFINE_HOOK(&daAlink_c::modelCalc, ModelCalc);
 DEFINE_HOOK(&daArrow_c::atHitCallBack, ArrowAtHitCallBack);
 DEFINE_HOOK(&daArrow_c::draw, ArrowDraw);
+DEFINE_HOOK(&daArrow_c::arrowShooting, ArrowShooting);
 DEFINE_HOOK(&mDoExt_morf_c::frameUpdate, MorfFrameUpdate);
 DEFINE_HOOK(&fpcLf_Execute, LeafExecute);
 DEFINE_HOOK(&cCcS::Set, CollisionSet);

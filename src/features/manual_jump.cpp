@@ -1,3 +1,5 @@
+bool g_manualJumpPendingR = false;
+
 bool start_manual_cucco_glide(daAlink_c* alink) {
     if (alink->mProcID == daAlink_c::PROC_FALL) {
         if (!alink->procAutoJumpInit(1)) {
@@ -29,8 +31,25 @@ bool start_manual_cucco_glide(daAlink_c* alink) {
     return true;
 }
 
+void clear_manual_glide_bow_aim(daAlink_c* alink) {
+    if (!g_manualGlideBowAiming) {
+        return;
+    }
+
+    if (alink != nullptr) {
+        dComIfGp_offCameraAttentionStatus(alink->field_0x317c, 0x10);
+        alink->mBodyAngle.y = g_manualGlideBowBodyAngleY;
+    }
+    dComIfGp_clearPlayerStatus0(0, 0x2000);
+    g_manualGlideBowAiming = false;
+    if (alink != nullptr) {
+        alink->setBowSight();
+    }
+}
+
 void release_manual_cucco_glide(daAlink_c* alink) {
     g_manualCuccoGlideActive = false;
+    clear_manual_glide_bow_aim(alink);
     alink->mProcVar2.field_0x300c = 0;
     alink->setSpecialGravity(alink->mpHIO->mAutoJump.m.mGravity,
                              alink->mpHIO->mAutoJump.m.mMaxFallSpeed, TRUE);
@@ -40,8 +59,7 @@ void release_manual_cucco_glide(daAlink_c* alink) {
 }
 
 HookAction release_manual_cucco_glide_on_a(
-    ModContext*, void* args, void*, void*)
-{
+    ModContext*, void* args, void*, void*) {
     auto* alink = mods::arg<daAlink_c*>(args, 0);
     if (g_manualCuccoGlideActive && alink != nullptr &&
         alink == dComIfGp_getLinkPlayer() &&
@@ -54,8 +72,7 @@ HookAction release_manual_cucco_glide_on_a(
 }
 
 HookAction emulate_manual_cucco_glide_check(
-    ModContext*, void* args, void* retval, void*)
-{
+    ModContext*, void* args, void* retval, void*) {
     auto* alink = mods::arg<daAlink_c*>(args, 0);
     if (g_manualCuccoGlideActive && alink != nullptr &&
         alink == dComIfGp_getLinkPlayer() &&
@@ -68,6 +85,106 @@ HookAction emulate_manual_cucco_glide_check(
     return HOOK_CONTINUE;
 }
 
+HookAction suspend_manual_glide_bow_movement_input(
+    ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (g_manualGlideBowAiming && alink != nullptr &&
+        alink == dComIfGp_getLinkPlayer())
+    {
+        g_manualGlideBowMoveValue = alink->mMoveValue;
+        alink->mMoveValue = 0.0f;
+    }
+    return HOOK_CONTINUE;
+}
+
+void update_manual_glide_bow_aim(ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (alink == nullptr || alink != dComIfGp_getLinkPlayer()) {
+        return;
+    }
+
+    if (g_manualGlideBowAiming) {
+        alink->mMoveValue = g_manualGlideBowMoveValue;
+    }
+
+    const bool aimingBow = g_manualCuccoGlideActive &&
+        alink->mProcID == daAlink_c::PROC_AUTO_JUMP &&
+        alink->checkBowAndSlingItem(alink->mEquipItem) &&
+        alink->checkBowAnime();
+    if (!aimingBow) {
+        clear_manual_glide_bow_aim(alink);
+        return;
+    }
+
+    if (!g_manualGlideBowAiming) {
+        g_manualGlideBowBodyAngleY = alink->mBodyAngle.y;
+        g_manualGlideBowAiming = true;
+        dComIfGp_onCameraAttentionStatus(alink->field_0x317c, 0x10);
+        alink->setSubjectMode();
+    }
+
+    const s16 facingAngle = alink->shape_angle.y;
+    alink->shape_angle.y = alink->field_0x310c;
+    alink->mBodyAngle.y = g_manualGlideBowBodyAngleY;
+    alink->setBodyAngleToCamera();
+    const s16 aimingAngle = alink->shape_angle.y;
+    alink->shape_angle.y = facingAngle;
+    alink->mBodyAngle.y = static_cast<s16>(aimingAngle - facingAngle);
+    alink->field_0x310c = aimingAngle;
+    alink->setBowSight();
+}
+
+HookAction enable_manual_glide_arrow_aim(
+    ModContext*, void*, void*, void*) {
+    auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    if (g_manualGlideBowAiming && alink != nullptr &&
+        !dComIfGp_checkPlayerStatus0(0, 0x200000))
+    {
+        dComIfGp_setPlayerStatus0(0, 0x200000);
+        g_manualGlideArrowAimStatusAdded = true;
+    }
+    return HOOK_CONTINUE;
+}
+
+void restore_manual_glide_arrow_aim(ModContext*, void*, void*, void*) {
+    if (g_manualGlideArrowAimStatusAdded) {
+        dComIfGp_clearPlayerStatus0(0, 0x200000);
+        g_manualGlideArrowAimStatusAdded = false;
+    }
+}
+
+HookAction allow_manual_glide_bow_pitch(
+    ModContext*, void*, void* retval, void*) {
+    if (g_manualGlideBowAiming) {
+        *static_cast<BOOL*>(retval) = FALSE;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction preserve_manual_glide_bow_pitch(
+    ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (g_manualGlideBowAiming && alink != nullptr &&
+        alink == dComIfGp_getLinkPlayer() &&
+        alink->mProcID == daAlink_c::PROC_AUTO_JUMP)
+    {
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+#if TARGET_PC
+HookAction enable_manual_glide_bow_aim_context(
+    ModContext*, void*, void* retval, void*) {
+    if (g_manualGlideBowAiming) {
+        *static_cast<bool*>(retval) = true;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+#endif
+
 void update_manual_cucco_glide(daAlink_c* alink) {
     if (g_manualCuccoGlideActive &&
         (alink == nullptr || alink->checkEventRun() || alink->checkWolf() ||
@@ -76,6 +193,7 @@ void update_manual_cucco_glide(daAlink_c* alink) {
          alink->mProcVar2.field_0x300c == 0))
     {
         g_manualCuccoGlideActive = false;
+        clear_manual_glide_bow_aim(alink);
     }
 }
 
@@ -127,7 +245,7 @@ void update_hover_plane_lowering(daAlink_c* alink) {
     g_hoverLandingFrames = 0;
 }
 
-bool try_manual_jump(daAlink_c* alink) {
+bool try_manual_jump(daAlink_c* alink, bool pendingRPress = false) {
     if (alink == nullptr || g_secondaryRing != nullptr || g_primaryRingOpen ||
         g_sitActionState != SitActionState::Inactive || g_shieldSurfActive ||
         alink->checkWolf() || alink->checkEventRun() || alink->checkRideOn())
@@ -152,7 +270,7 @@ bool try_manual_jump(daAlink_c* alink) {
         break;
     case 4:
         buttonMask = daAlink_c::BTN_R;
-        triggered = mDoCPd_c::getTrigLockR(PAD_1) != 0;
+        triggered = pendingRPress || mDoCPd_c::getTrigLockR(PAD_1) != 0;
         break;
     case 5:
         buttonMask = daAlink_c::BTN_Z;
@@ -163,6 +281,16 @@ bool try_manual_jump(daAlink_c* alink) {
     }
 
     if (!triggered) {
+        return false;
+    }
+
+    if (!pendingRPress && buttonMask == daAlink_c::BTN_R &&
+        alink->mLinkAcch.ChkGroundHit() &&
+        (alink->mProcID == daAlink_c::PROC_WAIT ||
+         alink->mProcID == daAlink_c::PROC_MOVE))
+    {
+        // Let vanilla R interactions choose Link's action before treating the press as a jump.
+        g_manualJumpPendingR = true;
         return false;
     }
 
@@ -249,9 +377,20 @@ void update_secondary_assigned_item_input(ModContext*, void* args, void*, void*)
         return;
     }
 
+    const bool pendingRPress = g_manualJumpPendingR;
+    g_manualJumpPendingR = false;
     update_hover_plane_lowering(alink);
 
     if (alink->checkWolf()) {
+        return;
+    }
+
+    if (pendingRPress && manualJumpBinding() == 4 &&
+        alink->mLinkAcch.ChkGroundHit() &&
+        (alink->mProcID == daAlink_c::PROC_WAIT ||
+         alink->mProcID == daAlink_c::PROC_MOVE) &&
+        try_manual_jump(alink, true))
+    {
         return;
     }
 
@@ -268,6 +407,36 @@ void update_secondary_assigned_item_input(ModContext*, void* args, void*, void*)
     if (g_secondaryRing != nullptr || g_primaryRingOpen || alink->checkEventRun()) {
         g_secondaryItemInputHandled = true;
         return;
+    }
+
+    if (g_manualCuccoGlideActive &&
+        alink->mProcID == daAlink_c::PROC_AUTO_JUMP)
+    {
+        auto* heldActor = alink->mGrabItemAcKeep.getActor();
+        if (heldActor != nullptr &&
+            fopAcM_GetName(heldActor) == fpcNm_NBOMB_e)
+        {
+            for (int button = 0; button < 2; ++button) {
+                const bool triggered = button == 0 ? xTriggered : yTriggered;
+                if (!triggered) {
+                    continue;
+                }
+
+                const int itemId = secondaryItemAssigned(button)
+                    ? secondaryItemIdForSlot(g_secondarySelectedItems[button])
+                    : dComIfGp_getSelectItem(button);
+                if (alink->checkBombItem(itemId)) {
+                    heldActor->speedF = 0.0f;
+                    heldActor->speed.y = 0.0f;
+                    alink->freeGrabItem();
+                    const u8 buttonMask =
+                        button == 0 ? daAlink_c::BTN_X : daAlink_c::BTN_Y;
+                    alink->mItemTrigger &= static_cast<u8>(~buttonMask);
+                    g_secondaryItemInputHandled = true;
+                    return;
+                }
+            }
+        }
     }
 
     const u8 pressedButtons = static_cast<u8>(

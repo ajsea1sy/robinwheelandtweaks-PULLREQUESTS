@@ -212,6 +212,10 @@ bool g_shieldSurfDismountPending = false;
 fpc_ProcID g_shieldSurfBoardId = fpcM_ERROR_PROCESS_ID_e;
 unsigned int g_shieldSurfStartWaitFrames = 0;
 bool g_manualCuccoGlideActive = false;
+bool g_manualGlideBowAiming = false;
+f32 g_manualGlideBowMoveValue = 0.0f;
+s16 g_manualGlideBowBodyAngleY = 0;
+bool g_manualGlideArrowAimStatusAdded = false;
 u32 g_manualGlideAuraEmitters[2][3] = {};
 bool g_darkLinkFormActive = false;
 SitActionState g_sitActionState = SitActionState::Inactive;
@@ -388,6 +392,15 @@ ModResult install_hooks() {
     ADD_PRE(SetHeavyBoots, handle_hover_boots_heavy_toggle);
     ADD_POST(SetStickData, update_secondary_assigned_item_input);
     ADD_PRE(CheckGrabRooster, emulate_manual_cucco_glide_check);
+    ADD_PRE(ProcAutoJump, suspend_manual_glide_bow_movement_input);
+    ADD_POST(ProcAutoJump, update_manual_glide_bow_aim);
+    ADD_PRE(ArrowShooting, enable_manual_glide_arrow_aim);
+    ADD_POST(ArrowShooting, restore_manual_glide_arrow_aim);
+    ADD_PRE(SetBodyAngleXReadyAnime, preserve_manual_glide_bow_pitch);
+    ADD_PRE(CheckNotItemSinkLimit, allow_manual_glide_bow_pitch);
+#if TARGET_PC
+    ADD_PRE(CheckAimContext, enable_manual_glide_bow_aim_context);
+#endif
     ADD_POST(SetStickData, suppress_sit_stick_input);
     ADD_PRE(CheckSnowCode, allow_shield_surf_on_any_ground);
     ADD_PRE(CheckShieldDraw, suppress_player_shield_draw_during_surf);
@@ -470,6 +483,11 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_shieldSurfBoardId = fpcM_ERROR_PROCESS_ID_e;
     g_shieldSurfStartWaitFrames = 0;
     g_manualCuccoGlideActive = false;
+    g_manualGlideBowAiming = false;
+    g_manualGlideBowMoveValue = 0.0f;
+    g_manualGlideBowBodyAngleY = 0;
+    g_manualGlideArrowAimStatusAdded = false;
+    g_manualJumpPendingR = false;
     stop_manual_glide_aura();
     g_iceArrowSelected = false;
     g_iceArrowFrozenTargets.fill({});
@@ -688,6 +706,14 @@ MOD_EXPORT ModResult mod_update(ModError*) {
 }
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
+    if (g_manualGlideArrowAimStatusAdded) {
+        dComIfGp_clearPlayerStatus0(0, 0x200000);
+        g_manualGlideArrowAimStatusAdded = false;
+    }
+    if (g_manualGlideBowAiming) {
+        dComIfGp_clearPlayerStatus0(0, 0x2000);
+        g_manualGlideBowAiming = false;
+    }
     g_manualCuccoGlideActive = false;
     stop_manual_glide_aura();
     if (g_secondarySaveObserver != 0) {
