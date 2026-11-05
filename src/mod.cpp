@@ -300,7 +300,7 @@ int begin_hawk_grass_whistle(daAlink_c* alink, u8 button) {
 
     alink->mLeftHandIndex = 0xFE;
     alink->setGrassWhistleModel(0);
-    svc_log->info(mod_ctx, "Hawk Grass equipped; press A to play or B to cancel");
+    svc_log->info(mod_ctx, "Hawk Grass equipped");
     return result;
 }
 
@@ -541,7 +541,7 @@ void update_lava_return_timer() {
         alink->procCoLavaReturnInit(FALSE) != 0)
     {
         g_lavaSinkFrames = 0;
-        svc_log->info(mod_ctx, "Goron Tunic triggered vanilla lava return");
+        svc_log->info(mod_ctx, "Goron Tunic: triggered vanilla lava return");
     }
 }
 
@@ -2216,7 +2216,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     static const char* kWheelDirectionOptions[] = {"Left", "Down"};
     UiControlDesc control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_DROPDOWN;
-    control.label = "D-pad direction that opens the secondary inventory wheel";
+    control.label = "Open Secondary Wheel Bind";
     control.help_rml =
         "The other Left/Down direction opens the map. In the secondary wheel, press X or Y on "
         "the Goron Tunic or Hover Boots to equip or unequip it. Hover Boots hold Link at the "
@@ -2236,7 +2236,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
 
     control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_TOGGLE;
-    control.label = "Walk on lava indefinitely";
+    control.label = "Goron Tunic: Indefinite Lava Walking";
     control.help_rml =
         "When the Goron Tunic is equipped, stay at the lava surface without sinking or "
         "triggering the five-second lava return.";
@@ -2251,7 +2251,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     control.kind = UI_CONTROL_TOGGLE;
     control.label = "Twilight Ward (Magic Armor)";
     control.help_rml =
-        "When Magic Armor is worn, hits still deal damage but do not interrupt Link, stun him, "
+        "When the Magic Armor is worn, hits still deal damage but do not interrupt Link, stun him, "
         "or knock him back.";
     control.binding = UI_BINDING_CONFIG_VAR;
     control.config_var = g_twilightWard;
@@ -2262,7 +2262,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
 
     control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_TOGGLE;
-    control.label = "Hawk Grass one-hit attacks";
+    control.label = "Hawk Grass: One-hit Attacks";
     control.help_rml =
         "The Hawk called by the secondary Hawk Grass deals one-hit damage with its attacks.";
     control.binding = UI_BINDING_CONFIG_VAR;
@@ -2274,7 +2274,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
 
     control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_TOGGLE;
-    control.label = "Hover Boots water walking (replaces airwalking)";
+    control.label = "Hover Boots: Water Walk Instead";
     control.help_rml =
         "When enabled, Hover Boots walk on water and no longer airwalk. Disabled by default.";
     control.binding = UI_BINDING_CONFIG_VAR;
@@ -2287,7 +2287,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_TOGGLE;
     control.label = "Rupee Magnet";
-    control.help_rml = "Collect nearby rupees automatically. The radius is configurable below.";
+    control.help_rml = "Collect nearby rupees automatically. Configurable radius.";
     control.binding = UI_BINDING_CONFIG_VAR;
     control.config_var = g_rupeeMagnetEnabled;
     result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
@@ -2297,7 +2297,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
 
     control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_NUMBER;
-    control.label = "Rupee Magnet radius";
+    control.label = "Rupee Magnet: Radius";
     control.help_rml =
         "100% is 300 game units, matching the game's existing rupee-return distance. "
         "The configurable range is 50% (150 units) to 300% (900 units).";
