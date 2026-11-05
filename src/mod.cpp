@@ -22,6 +22,7 @@
 #include "JSystem/JUtility/JUTNameTab.h"
 #include "d/actor/d_a_alink.h"
 #include "d/actor/d_a_arrow.h"
+#include "d/actor/d_a_obj_iceleaf.h"
 #include "d/d_a_item_static.h"
 #include "d/actor/d_a_npc_tk.h"
 #include "SSystem/SComponent/c_cc_d.h"
@@ -71,8 +72,10 @@ namespace {
 
 constexpr int kWheelOpensLeft = 0;
 constexpr int kWheelOpensDown = 1;
+constexpr u8 kShieldSurfSlot = 0xFC;
 constexpr u8 kSitSlot = 0xFD;
 constexpr u8 kGoronTunicSlot = 0xFE;
+constexpr u8 kShieldSurfItemId = 0xF7;
 constexpr u8 kSitItemId = 0xF9;
 constexpr u8 kGoronTunicItemId = 0xFB;
 constexpr u8 kHawkGrassItem = 0xFD;
@@ -81,7 +84,7 @@ constexpr u8 kDarkLinkItem = 0xFA;
 constexpr u8 kIceArrowItem = 0xF8;
 constexpr u8 kSecondarySlotBase = 0x80;
 constexpr int kHawkGrassIconTexture = 0x59;
-constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 2;
+constexpr u8 kSecondaryWheelSlotCount = MAX_ITEM_SLOTS + 3;
 constexpr f32 kSecondaryIconScale = 0.55f;
 constexpr f32 kSecondaryCursorScale = 0.5f;
 constexpr u32 kHoverLandingRecoveryFrames = 30;
@@ -104,191 +107,13 @@ constexpr unsigned int kHoverWaterMissToleranceFrames = 8;
 constexpr u32 kDarkLinkTransitionFrames = 30;
 constexpr f32 kSitModelGroundOffset = -28.0f;
 constexpr f32 kSitModelForwardOffset = 65.0f;
+constexpr f32 kShieldSurfBoardRaise = 15.0f;
 constexpr int64_t kRupeeMagnetDefaultRadiusPercent = 100;
 constexpr int64_t kRupeeMagnetMinRadiusPercent = 50;
 constexpr int64_t kRupeeMagnetMaxRadiusPercent = 300;
 constexpr f32 kRupeeMagnetBaseRadius = 300.0f;
-constexpr u32 kFirstSitMusicBgmId = Z2BGM_FIELD_LINK_DAY;
-constexpr size_t kSitMusicTrackCount = Z2BGM_TEMP_O - Z2BGM_FIELD_LINK_DAY + 1;
-constexpr size_t kSitMusicOptionCount = kSitMusicTrackCount + 1;
-static_assert(Z2BGM_TEMP_O == Z2BGM_FIELD_LINK_DAY + 0xAB);
-
-constexpr const char* kSitMusicTrackNames[] = {
-    "FIELD_LINK_DAY",
-    "FIELD_LINK_NIGHT",
-    "FIELD",
-    "DUNGEON",
-    "HORSE_BATTLE",
-    "TOAL_VILLEGE",
-    "COWBOY_GAME",
-    "FACE_OFF_BATTLE",
-    "BOOMERAMG_MONKEY",
-    "DUNGEON_FOREST",
-    "ITEM_GET",
-    "ITEM_GET_MINI",
-    "BOSSBABA_0",
-    "BOSSBABA_1",
-    "BOSSBABA_2",
-    "BATTLE_NORMAL",
-    "RANCH",
-    "WILD_GOAT",
-    "OPEN_BOX",
-    "GAME_OVER",
-    "ITEM_GET_ME",
-    "HORSE_BATTLE_D02",
-    "TWILIGHT",
-    "EVENT01",
-    "DUNGEON_LV2",
-    "TOAL_NIGHT",
-    "DEATH_MOUNTAIN01",
-    "BATTLE_TWILIGHT",
-    "HEART_GET",
-    "MAGNE_GORON",
-    "SHOP01",
-    "SHOP02",
-    "DUNGEON_LV3",
-    "MAGNE_GORON_D01",
-    "MAGNE_GORON_D02",
-    "FILONE_FOREST",
-    "SUMO",
-    "BOSSFIREMAN_0",
-    "KAKARIKO",
-    "DEKUTOAD",
-    "DEKUTOAD_D01",
-    "RODEO",
-    "BOSSFIREMAN_1",
-    "SUMO_D1",
-    "INDOOR",
-    "DUNGEON_LV4",
-    "STATUE_GAME",
-    "EVENT02",
-    "BOSS_OCTAEEL_0",
-    "BOSS_OCTAEEL_1",
-    "BOSS_OCTAEEL_D01",
-    "BOSS_OCTAEEL_D02",
-    "DESERT",
-    "ZORA_VILLAGE",
-    "BRIDGE_ON_FIRE",
-    "DUNGEON_LV5",
-    "DEMO10",
-    "VARIANT",
-    "CARGO_GAME_TW",
-    "CASTLE_TOWN",
-    "DUNGEON_LV6",
-    "DUNGEON_LV7",
-    "DUNGEON_LV8",
-    "DUNGEON_LV9_02",
-    "DEATH_MOUNTAIN02",
-    "HOLY_FOREST",
-    "FISHING",
-    "FISHING_BARE",
-    "FISHING_GET1",
-    "FISHING_GET2",
-    "FISHING_GET3",
-    "LUTERA1",
-    "LUTERA2",
-    "FISHING_HIT",
-    "SNOW_MOUNTAIN",
-    "SNOW_BOARD",
-    "BOSS_SNOWWOMAN_0",
-    "BOSS_SNOWWOMAN_1",
-    "DEMO08",
-    "DEMO13_SEQ",
-    "CHURCH1",
-    "CHURCH2",
-    "HOWL_TOBIKUSA",
-    "HOWL_UMAKUSA",
-    "HOWL_ZELDASONG",
-    "HOWL_LIGHT_PRLD",
-    "HIDDEN_VIL_D1",
-    "HIDDEN_VILLAGE",
-    "SHOP_CELEB",
-    "SHOP_MARO",
-    "LAKE",
-    "STONE_ZELDASONG",
-    "STONE_LIGHT_PRLD",
-    "BOSS_SNOWWOMAN_D1",
-    "ROOM_2",
-    "MIDNA_SOS",
-    "FORTUNE",
-    "IB_MBOSS",
-    "BOSS_ZANT",
-    "IB_MBOSS_D01",
-    "SUMOMO",
-    "RAKKA_HOUSE",
-    "LIGHT_PRLD_DUO",
-    "SOUL_REQ_STONE",
-    "SOUL_REQ_HOWL",
-    "SOUL_REQ_DUO",
-    "LUTERA_DEMO",
-    "TEMPLE_OF_TIME",
-    "TN_MBOSS",
-    "OBACHAN",
-    "RIVER_GAME",
-    "GG_MBOSS",
-    "OUGI_TRAINING",
-    "HEALING_STONE",
-    "HEALING_HOWL",
-    "HEALING_DUO",
-    "NEW_01_STONE",
-    "NEW_01_HOWL",
-    "NEW_01_DUO",
-    "SUB_DUNGEON",
-    "WCS_GAME",
-    "WCS_D01",
-    "MINIGAME_ROOM",
-    "NEW_02_STONE",
-    "NEW_02_HOWL",
-    "NEW_02_DUO",
-    "NEW_03_STONE",
-    "NEW_03_HOWL",
-    "NEW_03_DUO",
-    "ITEM_GET_INSECT",
-    "ITEM_GET_SMELL",
-    "ITEM_GET_POU",
-    "GG_MBOSS_D01",
-    "P_ZANT",
-    "VS_GANON_01",
-    "VS_GANON_02",
-    "VS_GANON_04",
-    "HARAGIGANT_D01",
-    "HARAGIGANT_D02",
-    "HARAGIGANT_BTL01",
-    "HARAGIGANT_BTL02",
-    "DRAGON_D01",
-    "DRAGON_D02",
-    "DRAGON_BTL01",
-    "DRAGON_BTL02",
-    "KOROKORO_GAME",
-    "YAMIMUSHI_B_D01",
-    "GOMA_D01",
-    "GOMA_BTL01",
-    "GOMA_BTL02",
-    "FACE_OFF_BATTLE2",
-    "FACE_OFF_BATTLE3",
-    "SNOWBOARD_WIN",
-    "SNOWBOARD_LOSE",
-    "INDOOR_03",
-    "INDOOR_04",
-    "MINIGAME_WIN01",
-    "MINIGAME_WIN02",
-    "POSTMAN",
-    "EVENT05",
-    "ITEM_GET_ME_S",
-    "D30_01_NEXT_REQ",
-    "D30_02_NEXT_REQ",
-    "TARO_RESCUE",
-    "KOMONJO_GET_INTRO",
-    "RIVER_GAME_00",
-    "ZORA_D01",
-    "SUMO_D02",
-    "TN_MBOSS_LV9",
-    "MENU_SELECT",
-    "TEMP",
-    "TEMP_O",
-};
-static_assert(sizeof(kSitMusicTrackNames) / sizeof(kSitMusicTrackNames[0]) ==
-              kSitMusicTrackCount);
+constexpr u32 kSitMusicBgmId = Z2BGM_MENU_SELECT;
+constexpr size_t kSitMusicOptionCount = 1;
 
 struct SitMusicWaveMapping {
     u32 track;
@@ -308,57 +133,7 @@ struct SitMusicWaveSnapshot {
 };
 
 constexpr SitMusicWaveMapping kSitMusicWaveMappings[] = {
-    {Z2BGM_CARGO_GAME_TW, 0x24, 0},
-    {Z2BGM_CASTLE_TOWN, 0x25, 0},
-    {Z2BGM_CHURCH1, 0x2F, 0},
-    {Z2BGM_CHURCH2, 0x30, 0},
-    {Z2BGM_DEATH_MOUNTAIN01, 0x11, 0},
-    {Z2BGM_DEATH_MOUNTAIN02, 0x11, 0},
-    {Z2BGM_DEMO08, 0x21, 0},
-    {Z2BGM_DEMO10, 0x21, 0},
-    {Z2BGM_DESERT, 0x1F, 0},
-    {Z2BGM_DUNGEON_FOREST, 0x0A, 0},
-    {Z2BGM_DUNGEON_LV2, 0x13, 0},
-    {Z2BGM_DUNGEON_LV3, 0x15, 0},
-    {Z2BGM_DUNGEON_LV4, 0x1A, 0},
-    {Z2BGM_DUNGEON_LV5, 0x1D, 0},
-    {Z2BGM_DUNGEON_LV6, 0x26, 0},
-    {Z2BGM_DUNGEON_LV7, 0x27, 0},
-    {Z2BGM_DUNGEON_LV8, 0x28, 0},
-    {Z2BGM_DUNGEON_LV9_02, 0x29, 0},
-    {Z2BGM_EVENT01, 0x05, 0},
-    {Z2BGM_EVENT02, 0x1C, 0},
-    {Z2BGM_EVENT05, 0x55, 0},
-    {Z2BGM_FIELD_LINK_DAY, 0x19, 0},
-    {Z2BGM_FIELD_LINK_NIGHT, 0x19, 0},
-    {Z2BGM_FILONE_FOREST, 0x0F, 0},
-    {Z2BGM_FISHING, 0x2B, 0},
-    {Z2BGM_FORTUNE, 0x37, 0},
-    {Z2BGM_HIDDEN_VILLAGE, 0x31, 0},
-    {Z2BGM_HOLY_FOREST, 0x2A, 0},
-    {Z2BGM_HORSE_BATTLE, 0x0D, 0},
-    {Z2BGM_INDOOR, 0x08, 0},
-    {Z2BGM_INDOOR_03, 0x08, 0},
-    {Z2BGM_INDOOR_04, 0x56, 0},
-    {Z2BGM_KAKARIKO, 0x10, 0},
-    {Z2BGM_LAKE, 0x34, 0},
-    {Z2BGM_LUTERA2, 0x2C, 0},
-    {Z2BGM_MIDNA_SOS, 0x36, 0},
-    {Z2BGM_MINIGAME_ROOM, 0x47, 0x46},
-    {Z2BGM_OBACHAN, 0x40, 0},
-    {Z2BGM_TOAL_VILLEGE, 0x03, 0, 0x04},
-    {Z2BGM_RANCH, 0x01, 0},
-    {Z2BGM_ROOM_2, 0x35, 0},
-    {Z2BGM_SHOP01, 0x07, 0},
-    {Z2BGM_SHOP02, 0x07, 0},
-    {Z2BGM_SHOP_CELEB, 0x32, 0},
-    {Z2BGM_SHOP_MARO, 0x33, 0},
-    {Z2BGM_SNOW_MOUNTAIN, 0x2D, 0},
-    {Z2BGM_SUB_DUNGEON, 0x45, 0},
-    {Z2BGM_TEMPLE_OF_TIME, 0x3E, 0, 0x1B},
-    {Z2BGM_TOAL_NIGHT, 0x06, 0},
-    {Z2BGM_TWILIGHT, 0x0E, 0},
-    {Z2BGM_ZORA_VILLAGE, 0x20, 0},
+    {Z2BGM_MENU_SELECT, 0, 0},
 };
 
 enum class SecondaryIconContext : u8 {
@@ -381,6 +156,7 @@ ConfigVarHandle g_infiniteLavaWalk = 0;
 ConfigVarHandle g_twilightWard = 0;
 ConfigVarHandle g_hawkOneShotDamage = 0;
 ConfigVarHandle g_hoverBootsWaterWalking = 0;
+ConfigVarHandle g_shieldSurfRBoost = 0;
 ConfigVarHandle g_rupeeMagnetEnabled = 0;
 ConfigVarHandle g_rupeeMagnetRadiusPercent = 0;
 ConfigVarHandle g_sitMusicTrack = 0;
@@ -388,6 +164,9 @@ std::array<std::array<char, 48>, kSitMusicOptionCount> g_sitMusicOptionLabelStor
 std::array<const char*, kSitMusicOptionCount> g_sitMusicOptionLabels{};
 bool g_sitMusicOptionsInitialized = false;
 u32 g_sitMusicActiveTrack = 0;
+bool g_sitMusicAreaFadePending = false;
+u16 g_sitMusicAreaFadeFrames = 0;
+bool g_sitMusicAreaFadeTimeoutReported = false;
 u32 g_sitMusicLastStartedTrack = 0;
 u32 g_sitMusicReportedOverrideTrack = 0;
 int64_t g_sitMusicLastLoggedSelection = -1;
@@ -413,6 +192,11 @@ bool g_openingSecondaryRing = false;
 bool g_goronTunicEquipped = false;
 u32 g_goronLavaContactFrames = 0;
 bool g_hoverBootsEquipped = false;
+bool g_shieldSurfActive = false;
+bool g_shieldSurfStartPending = false;
+bool g_shieldSurfDismountPending = false;
+fpc_ProcID g_shieldSurfBoardId = fpcM_ERROR_PROCESS_ID_e;
+unsigned int g_shieldSurfStartWaitFrames = 0;
 bool g_darkLinkFormActive = false;
 SitActionState g_sitActionState = SitActionState::Inactive;
 s16 g_sitOriginalShapeAngleX = 0;
@@ -520,6 +304,9 @@ JKRExpHeap* g_tunicWheelItemHeap = nullptr;
 J2DPicture* g_sitWheelItemTex = nullptr;
 ResTIMG* g_sitWheelItemBuf = nullptr;
 JKRExpHeap* g_sitWheelItemHeap = nullptr;
+std::array<J2DPicture*, 3> g_shieldSurfWheelItemTex{};
+std::array<ResTIMG*, 3> g_shieldSurfWheelItemBuf{};
+JKRExpHeap* g_shieldSurfWheelItemHeap = nullptr;
 
 bool wheelOpensDown() {
     int64_t value = kWheelOpensDown;
@@ -556,6 +343,10 @@ bool hoverBootsWaterWalkingEnabled() {
     return get_bool_option(g_hoverBootsWaterWalking, false);
 }
 
+bool shieldSurfRBoostEnabled() {
+    return get_bool_option(g_shieldSurfRBoost, false);
+}
+
 bool hoverBootsAirwalkingEnabled() {
     return !hoverBootsWaterWalkingEnabled();
 }
@@ -586,31 +377,12 @@ void initialize_sit_music_options() {
         return;
     }
 
-    constexpr char kDefaultLabel[] = "Default (Area Music)";
-    std::memcpy(g_sitMusicOptionLabelStorage[0].data(), kDefaultLabel, sizeof(kDefaultLabel));
+    constexpr char kFileSelectTrackLabel[] = "File Select";
+    std::memcpy(
+        g_sitMusicOptionLabelStorage[0].data(),
+        kFileSelectTrackLabel,
+        sizeof(kFileSelectTrackLabel));
     g_sitMusicOptionLabels[0] = g_sitMusicOptionLabelStorage[0].data();
-    for (size_t track = 0; track < kSitMusicTrackCount; ++track) {
-        const char* source = std::strcmp(kSitMusicTrackNames[track], "EVENT05") == 0
-            ? "Our Children Taken"
-            : kSitMusicTrackNames[track];
-        auto& label = g_sitMusicOptionLabelStorage[track + 1];
-        bool capitalizeNext = true;
-        size_t output = 0;
-        for (size_t input = 0; source[input] != '\0' && output + 1 < label.size(); ++input) {
-            const char character = source[input];
-            if (character == '_') {
-                label[output++] = ' ';
-                capitalizeNext = true;
-            } else {
-                label[output++] = capitalizeNext
-                    ? static_cast<char>(std::toupper(static_cast<unsigned char>(character)))
-                    : static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-                capitalizeNext = false;
-            }
-        }
-        label[output] = '\0';
-        g_sitMusicOptionLabels[track + 1] = label.data();
-    }
     g_sitMusicOptionsInitialized = true;
 }
 
@@ -623,11 +395,11 @@ int64_t sitMusicSelection() {
             svc_log->warn(mod_ctx, "could not read Sit music selector config");
             g_sitMusicConfigReadFailureReported = true;
         }
-        return 0;
+        return -1;
     }
     g_sitMusicConfigReadFailureReported = false;
-    if (value < 0 || value >= static_cast<int64_t>(kSitMusicOptionCount)) {
-        return 0;
+    if (value != 0) {
+        return -1;
     }
     return value;
 }
@@ -659,7 +431,15 @@ bool secondaryTunicAssigned(int button) {
     return g_secondarySelectedItems[button] == kGoronTunicSlot;
 }
 
+u8 shield_surf_display_item() {
+    const u8 shield = dComIfGs_getSelectEquipShield();
+    return shield == dItemNo_NONE_e ? dItemNo_SHIELD_e : shield;
+}
+
 u8 secondaryItemIdForSlot(u8 slotId) {
+    if (slotId == kShieldSurfSlot) {
+        return kShieldSurfItemId;
+    }
     if (slotId == kSitSlot) {
         return kSitItemId;
     }
@@ -677,6 +457,9 @@ u8 secondaryItemIdForSlot(u8 slotId) {
 }
 
 u8 secondaryDisplayItemForId(u8 itemId) {
+    if (itemId == kShieldSurfItemId) {
+        return shield_surf_display_item();
+    }
     if (itemId == kSitItemId) {
         return dItemNo_WOOD_STICK_e;
     }
@@ -823,6 +606,9 @@ void update_ice_keese_resource() {
 }
 
 const char* secondaryItemNameForSlot(u8 slotId) {
+    if (slotId == kShieldSurfSlot) {
+        return "Shield Surf";
+    }
     if (slotId == kSitSlot) {
         return "Sit";
     }
@@ -972,7 +758,8 @@ bool secondaryItemAssigned(int button) {
 }
 
 bool isValidSecondaryAssignment(int64_t slotId) {
-    return slotId == dItemNo_NONE_e || slotId == kSitSlot || slotId == kGoronTunicSlot ||
+    return slotId == dItemNo_NONE_e || slotId == kShieldSurfSlot ||
+           slotId == kSitSlot || slotId == kGoronTunicSlot ||
            (slotId >= kSecondarySlotBase &&
             slotId < kSecondarySlotBase + MAX_ITEM_SLOTS);
 }
@@ -1301,6 +1088,24 @@ void clear_sit_wheel_texture() {
     g_sitWheelItemHeap = nullptr;
 }
 
+void clear_shield_surf_wheel_textures() {
+    for (auto*& picture : g_shieldSurfWheelItemTex) {
+        if (picture != nullptr) {
+            JKR_DELETE(picture);
+            picture = nullptr;
+        }
+    }
+    if (g_shieldSurfWheelItemHeap != nullptr) {
+        for (auto*& buffer : g_shieldSurfWheelItemBuf) {
+            if (buffer != nullptr) {
+                g_shieldSurfWheelItemHeap->free(buffer);
+                buffer = nullptr;
+            }
+        }
+    }
+    g_shieldSurfWheelItemHeap = nullptr;
+}
+
 void load_sit_wheel_texture(dMenu_Ring_c* ring) {
     clear_sit_wheel_texture();
     ResourceBuffer icon = RESOURCE_BUFFER_INIT;
@@ -1341,6 +1146,42 @@ void load_sit_wheel_texture(dMenu_Ring_c* ring) {
     g_sitWheelItemTex->setBasePosition(J2DBasePosition_4);
 }
 
+void load_shield_surf_wheel_textures(dMenu_Ring_c* ring) {
+    clear_shield_surf_wheel_textures();
+    g_shieldSurfWheelItemHeap = ring->mpHeap;
+    for (auto*& buffer : g_shieldSurfWheelItemBuf) {
+        buffer = static_cast<ResTIMG*>(ring->mpHeap->alloc(kItemTextureBufferSize, 0x20));
+        if (buffer == nullptr) {
+            svc_log->error(mod_ctx, "failed to allocate the Shield Surf wheel icon");
+            clear_shield_surf_wheel_textures();
+            return;
+        }
+    }
+
+    const u8 shieldItem = shield_surf_display_item();
+    const int textureCount = dMeter2Info_readItemTexture(
+        shieldItem, g_shieldSurfWheelItemBuf[0], nullptr, g_shieldSurfWheelItemBuf[1],
+        nullptr, g_shieldSurfWheelItemBuf[2], nullptr, nullptr, nullptr, -1);
+    if (textureCount <= 0) {
+        svc_log->error(mod_ctx, "failed to read the Shield Surf wheel icon");
+        clear_shield_surf_wheel_textures();
+        return;
+    }
+    for (int texture = 0; texture < std::min(textureCount, 3); ++texture) {
+        g_shieldSurfWheelItemTex[texture] =
+            JKR_NEW J2DPicture(g_shieldSurfWheelItemBuf[texture]);
+        if (g_shieldSurfWheelItemTex[texture] == nullptr) {
+            svc_log->error(mod_ctx, "failed to create the Shield Surf wheel icon");
+            clear_shield_surf_wheel_textures();
+            return;
+        }
+        g_shieldSurfWheelItemTex[texture]->setBasePosition(J2DBasePosition_4);
+    }
+    dMeter2Info_setItemColor(
+        shieldItem, g_shieldSurfWheelItemTex[0], g_shieldSurfWheelItemTex[1],
+        g_shieldSurfWheelItemTex[2], nullptr);
+}
+
 void load_tunic_wheel_textures(dMenu_Ring_c* ring) {
     clear_tunic_wheel_textures();
     g_tunicWheelItemHeap = ring->mpHeap;
@@ -1367,8 +1208,9 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
     for (u8 slot = 0; slot < MAX_ITEM_SLOTS; ++slot) {
         g_secondaryWheelSlotIds[slot] = kSecondarySlotBase + slot;
     }
-    g_secondaryWheelSlotIds[MAX_ITEM_SLOTS] = kSitSlot;
-    g_secondaryWheelSlotIds[MAX_ITEM_SLOTS + 1] = kGoronTunicSlot;
+    g_secondaryWheelSlotIds[MAX_ITEM_SLOTS] = kShieldSurfSlot;
+    g_secondaryWheelSlotIds[MAX_ITEM_SLOTS + 1] = kSitSlot;
+    g_secondaryWheelSlotIds[MAX_ITEM_SLOTS + 2] = kGoronTunicSlot;
 
     ring->mItemsTotal = MAX_ITEM_SLOTS;
     ring->mTotalItemTexToAlloc = MAX_ITEM_SLOTS;
@@ -1491,6 +1333,7 @@ void setup_secondary_ring(dMenu_Ring_c* ring) {
         ring->mItemSlotParam2[index] =
             ring->mpItemBuf[index][0]->height / 48.0f * scale * kSecondaryIconScale;
     }
+    load_shield_surf_wheel_textures(ring);
     load_sit_wheel_texture(ring);
     load_tunic_wheel_textures(ring);
 
@@ -1880,6 +1723,24 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
         const f32 x = g_secondaryWheelSlotPosX[index] - 24.0f + pose.centerX;
         const f32 y = g_secondaryWheelSlotPosY[index] - 24.0f + pose.centerY;
         if (index == MAX_ITEM_SLOTS) {
+            if (g_shieldSurfWheelItemBuf[0] != nullptr) {
+                const u8 shieldItem = shield_surf_display_item();
+                const f32 scale =
+                    dItem_data::getTexScale(shieldItem) / 100.0f * kSecondaryIconScale;
+                const f32 width = g_shieldSurfWheelItemBuf[0]->width / 48.0f * scale * 48.0f;
+                const f32 height = g_shieldSurfWheelItemBuf[0]->height / 48.0f * scale * 48.0f;
+                for (auto* picture : g_shieldSurfWheelItemTex) {
+                    if (picture == nullptr) {
+                        continue;
+                    }
+                    picture->setAlpha(pose.alpha * 255.0f);
+                    picture->draw(x + (48.0f - width) * 0.5f,
+                        y + (48.0f - height) * 0.5f, width, height, 0, 0, 0);
+                }
+            }
+            continue;
+        }
+        if (index == MAX_ITEM_SLOTS + 1) {
             if (g_sitWheelItemTex != nullptr) {
                 constexpr f32 iconSize = 36.0f;
                 g_sitWheelItemTex->setAlpha(pose.alpha * 255.0f);
@@ -1890,7 +1751,7 @@ void draw_secondary_ring(dMenu_Ring_c* ring) {
             }
             continue;
         }
-        if (index == MAX_ITEM_SLOTS + 1) {
+        if (index == MAX_ITEM_SLOTS + 2) {
             if (g_tunicWheelItemBuf[0] == nullptr) {
                 continue;
             }
@@ -2062,6 +1923,7 @@ HookAction prepare_ring_delete(ModContext*, void* args, void*, void*) {
     g_deletingSecondaryRing = isSecondaryRing(window->mpMenuRing);
     if (g_deletingSecondaryRing) {
         forget_secondary_ring_pose(window->mpMenuRing);
+        clear_shield_surf_wheel_textures();
         clear_sit_wheel_texture();
         clear_tunic_wheel_textures();
     }
@@ -3791,12 +3653,8 @@ void update_sit_action() {
     alink->speedF = 0.0f;
 }
 
-u32 expected_sit_music_bgm_id(u32 selectedTrack) {
-    return selectedTrack == Z2BGM_LUTERA_DEMO ? Z2BGM_LUTERA2 : selectedTrack;
-}
-
 u32 sit_music_playback_id(Z2SeqMgr* sequenceManager, u32) {
-    return sequenceManager->getSubBgmID();
+    return sequenceManager->getMainBgmID();
 }
 
 const SitMusicWaveMapping* sit_music_wave_mapping(u32 track) {
@@ -3863,13 +3721,6 @@ bool prepare_sit_music_scene_waves(const SitMusicWaveMapping* mapping) {
         return false;
     }
 
-    auto* sectionHeap = JAUSectionHeap::getInstance();
-    auto* waveBank = sectionHeap != nullptr
-        ? sectionHeap->getWaveBankTable().getWaveBank(1) : nullptr;
-    if (waveBank == nullptr) {
-        return false;
-    }
-
     if (!g_sitMusicWaveSnapshot.active) {
         g_sitMusicWaveSnapshot.active = true;
         g_sitMusicWaveSnapshot.requestWave1 = sceneManager->requestBgmWave_1;
@@ -3890,6 +3741,18 @@ bool prepare_sit_music_scene_waves(const SitMusicWaveMapping* mapping) {
     sequenceManager->mBattleSeqCount = 0;
     if (g_sitMusicWaveTrack == mapping->track) {
         return true;
+    }
+
+    if (mapping->wave1 == 0 && mapping->wave2 == 0) {
+        g_sitMusicWaveTrack = mapping->track;
+        return true;
+    }
+
+    auto* sectionHeap = JAUSectionHeap::getInstance();
+    auto* waveBank = sectionHeap != nullptr
+        ? sectionHeap->getWaveBankTable().getWaveBank(1) : nullptr;
+    if (waveBank == nullptr) {
+        return false;
     }
 
     const u8 sceneWaves[] = {
@@ -3940,6 +3803,9 @@ bool prepare_sit_music_waves(u32 track) {
         ? static_cast<Z2SceneMgr*>(audioManager) : nullptr;
     if (sceneManager == nullptr) {
         return false;
+    }
+    if (mapping->wave1 == 0 && mapping->wave2 == 0) {
+        return true;
     }
     u8 wave1 = g_sitMusicResolvedWave1 != 0
         ? g_sitMusicResolvedWave1 : mapping->wave1;
@@ -4051,13 +3917,9 @@ void update_sit_music_wave_cleanup() {
 
     const int64_t selection = g_sitActionState == SitActionState::Seated
         ? sitMusicSelection()
-        : 0;
-    const u32 selectedTrack = selection > 0
-        ? kFirstSitMusicBgmId + static_cast<u32>(selection - 1)
-        : 0;
-    const u32 waveTrack = selectedTrack != 0
-        ? expected_sit_music_bgm_id(selectedTrack)
-        : 0;
+        : -1;
+    const u32 selectedTrack = selection == 0 ? kSitMusicBgmId : 0;
+    const u32 waveTrack = selectedTrack;
     const SitMusicWaveMapping* selectedMapping =
         g_sitMusicReportedFailureTrack == selectedTrack
             ? nullptr : sit_music_wave_mapping(waveTrack);
@@ -4115,17 +3977,17 @@ void update_sit_music_wave_cleanup() {
 
 void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack);
 
-void start_sit_music_track(u32 selectedTrack) {
+bool start_sit_music_track(u32 selectedTrack) {
     auto* audioManager = Z2GetAudioMgr();
     auto* sequenceManager = audioManager != nullptr
         ? static_cast<Z2SeqMgr*>(audioManager) : nullptr;
     if (sequenceManager == nullptr) {
-        return;
+        return false;
     }
 
-    const u32 track = expected_sit_music_bgm_id(selectedTrack);
+    const u32 track = selectedTrack;
     if (!prepare_sit_music_waves(track)) {
-        return;
+        return false;
     }
     set_sit_music_battle_override(sequenceManager);
 
@@ -4139,54 +4001,32 @@ void start_sit_music_track(u32 selectedTrack) {
         sequenceManager->mFanfareHandle.releaseSound();
         sequenceManager->mFanfareCount = 0;
     }
-    if (sequenceManager->mSubBgmHandle &&
-        sequenceManager->getSubBgmID() != track)
+    if (sequenceManager->mSubBgmHandle)
     {
         sequenceManager->mSubBgmHandle->stop(0);
         sequenceManager->mSubBgmHandle.releaseSound();
     }
-    bool started = false;
-    started = audioManager->mSoundMgr.startSound(
-        track, &sequenceManager->mSubBgmHandle, nullptr);
-    started = started && sequenceManager->getSubBgmID() == track;
+    sequenceManager->bgmStart(
+        track, Z2Param::BGM_CROSS_FADEIN_TIME, 0);
+    const bool started = sequenceManager->getMainBgmID() == track;
     if (started) {
-        sequenceManager->mSubBgmStatus = 0xff;
-        if (track == Z2BGM_HOLY_FOREST) {
-            for (u32 childTrack = 0; childTrack <= 3; ++childTrack) {
-                sequenceManager->setChildTrackVolume(
-                    &sequenceManager->mSubBgmHandle, childTrack, 1.0f, 0,
-                    -1.0f, -1.0f);
-            }
-            for (u32 childTrack = 4; childTrack <= 7; ++childTrack) {
-                sequenceManager->setChildTrackVolume(
-                    &sequenceManager->mSubBgmHandle, childTrack, 0.0f, 0,
-                    -1.0f, -1.0f);
-            }
-        }
-        sequenceManager->mSubBgmMaster.fadeInFromOut(
-            Z2Param::BGM_CROSS_FADEIN_TIME);
-        sequenceManager->mMainBgmMaster.fadeOut(
-            Z2Param::BGM_CROSS_FADEOUT_TIME);
+        sequenceManager->mBgmStatus = 0xff;
     }
     if (!started) {
         log_sit_music_start_failure(
             selectedTrack, sit_music_playback_id(sequenceManager, track));
-        return;
+        return false;
     }
     sequenceManager->field_0xb8 = -1;
     g_sitMusicActiveTrack = selectedTrack;
     if (g_sitMusicLastStartedTrack != selectedTrack) {
         char message[128];
-        const size_t trackIndex = selectedTrack - kFirstSitMusicBgmId;
-        const char* trackName = trackIndex < kSitMusicTrackCount
-            ? kSitMusicTrackNames[trackIndex] : "UNKNOWN";
         std::snprintf(message, sizeof(message),
-                      "Sit music started: selection %u, %s (%08x)",
-                      static_cast<u32>(selectedTrack - kFirstSitMusicBgmId + 1),
-                      trackName, track);
+                      "Sit music started: File Select (%08x)", track);
         svc_log->info(mod_ctx, message);
         g_sitMusicLastStartedTrack = selectedTrack;
     }
+    return true;
 }
 
 void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack) {
@@ -4194,13 +4034,10 @@ void log_sit_music_start_failure(u32 selectedTrack, u32 activeTrack) {
         return;
     }
 
-    const size_t trackIndex = selectedTrack - kFirstSitMusicBgmId;
-    const char* trackName = trackIndex < kSitMusicTrackCount
-        ? kSitMusicTrackNames[trackIndex] : "UNKNOWN";
     char message[128];
     std::snprintf(message, sizeof(message),
-                  "Sit music %s (%08x) could not start on its playback handle; active ID is %08x",
-                  trackName, selectedTrack, activeTrack);
+                  "Sit music File Select (%08x) could not start on its playback handle; active ID is %08x",
+                  selectedTrack, activeTrack);
     svc_log->warn(mod_ctx, message);
     g_sitMusicReportedFailureTrack = selectedTrack;
 }
@@ -4325,7 +4162,15 @@ void stop_sit_music_track() {
         return;
     }
 
-    const u32 track = expected_sit_music_bgm_id(g_sitMusicActiveTrack);
+    if (g_sitMusicAreaFadePending) {
+        sequenceManager->mMainBgmMaster.fadeIn(
+            Z2Param::BGM_CROSS_FADEIN_TIME);
+        g_sitMusicAreaFadePending = false;
+        g_sitMusicAreaFadeFrames = 0;
+        g_sitMusicAreaFadeTimeoutReported = false;
+    }
+
+    const u32 track = g_sitMusicActiveTrack;
     if (track != 0 && sequenceManager->mFanfareID == track) {
         sequenceManager->mFanfareID = static_cast<JAISoundID>(-1);
     }
@@ -4338,11 +4183,14 @@ void stop_sit_music_track() {
         sequenceManager->mFanfareMute.fadeIn(15);
     }
     if (track != 0) {
+        if (sequenceManager->getMainBgmID() == track) {
+            sequenceManager->mMainBgmHandle->stop(15);
+            sequenceManager->mMainBgmHandle.releaseSound();
+        }
         if (sequenceManager->getSubBgmID() == track) {
             sequenceManager->mSubBgmHandle->stop(15);
             sequenceManager->mSubBgmHandle.releaseSound();
         }
-        sequenceManager->mSubBgmMaster.fadeOut(15);
         if (!g_sitMusicWaveSnapshot.active) {
             sequenceManager->mMainBgmMaster.fadeIn(15);
         }
@@ -4368,23 +4216,13 @@ void update_sit_music() {
     const int64_t selection = sitMusicSelection();
     if (selection != g_sitMusicLastLoggedSelection) {
         g_sitMusicLastLoggedSelection = selection;
-        if (selection == 0) {
-            svc_log->info(mod_ctx, "Sit music selector read: Default (Area Music)");
-        } else {
-            const u32 selectedTrack =
-                kFirstSitMusicBgmId + static_cast<u32>(selection - 1);
-            const size_t trackIndex = selectedTrack - kFirstSitMusicBgmId;
-            char message[128];
-            std::snprintf(message, sizeof(message),
-                          "Sit music selector read: index %u, %s (%08x)",
-                          static_cast<u32>(selection),
-                          trackIndex < kSitMusicTrackCount
-                              ? kSitMusicTrackNames[trackIndex] : "UNKNOWN",
-                          selectedTrack);
-            svc_log->info(mod_ctx, message);
-        }
+        svc_log->info(
+            mod_ctx,
+            selection == 0
+                ? "Sit music selector read: File Select"
+                : "Sit music selector unavailable");
     }
-    if (selection == 0) {
+    if (selection < 0) {
         stop_sit_music_track();
         restore_sit_music_scene_waves();
         g_sitMusicReportedFailureTrack = 0;
@@ -4408,8 +4246,8 @@ void update_sit_music() {
         sequenceManager->mBattleSeqCount = 0;
     }
 
-    const u32 track = kFirstSitMusicBgmId + static_cast<u32>(selection - 1);
-    const u32 expectedTrack = expected_sit_music_bgm_id(track);
+    const u32 track = kSitMusicBgmId;
+    const u32 expectedTrack = track;
     if (g_sitMusicWaveSnapshot.active && g_sitMusicWaveTrack != track) {
         stop_sit_music_track();
         restore_sit_music_scene_waves();
@@ -4453,11 +4291,198 @@ void update_sit_music() {
         }
     }
 
-    start_sit_music_track(track);
+    if (!g_sitMusicAreaFadePending) {
+        sequenceManager->mMainBgmMaster.fadeOut(30);
+        g_sitMusicAreaFadePending = true;
+        g_sitMusicAreaFadeFrames = 0;
+        g_sitMusicAreaFadeTimeoutReported = false;
+    }
+    if (sequenceManager->mMainBgmMaster.getCount() != 0 ||
+        sequenceManager->mMainBgmMaster.getIntensity() > 0.001f)
+    {
+        constexpr u16 kSitMusicFadeTimeoutFrames = 90;
+        if (++g_sitMusicAreaFadeFrames < kSitMusicFadeTimeoutFrames) {
+            return;
+        }
+        sequenceManager->mMainBgmMaster.forceOut();
+        if (!g_sitMusicAreaFadeTimeoutReported) {
+            svc_log->warn(
+                mod_ctx,
+                "Sit music area fade timed out; forcing playback startup");
+            g_sitMusicAreaFadeTimeoutReported = true;
+        }
+    }
+
+    if (start_sit_music_track(track)) {
+        g_sitMusicAreaFadePending = false;
+        g_sitMusicAreaFadeFrames = 0;
+        g_sitMusicAreaFadeTimeoutReported = false;
+    }
 }
 
 void request_sit_action(daAlink_c* alink) {
     begin_sit_action(alink);
+}
+
+void delete_shield_surf_board() {
+    if (g_shieldSurfBoardId != fpcM_ERROR_PROCESS_ID_e) {
+        auto* board = static_cast<daObjIceLeaf_c*>(
+            fopAcM_SearchByID(g_shieldSurfBoardId));
+        if (board != nullptr) {
+            board->setMode(daObjIceLeaf_c::MODE_RIDE_e);
+            board->setAction(daObjIceLeaf_c::ACT_DEAD_e);
+            board->offRide();
+        }
+        fopAcM_delete(g_shieldSurfBoardId);
+        g_shieldSurfBoardId = fpcM_ERROR_PROCESS_ID_e;
+    }
+}
+
+bool is_shield_surf_board_process(int processId) {
+    return processId >= daAlink_c::PROC_BOARD_RIDE &&
+           processId <= daAlink_c::PROC_BOARD_CUT_TURN;
+}
+
+void release_shield_surf_player_state(daAlink_c* alink) {
+    if (alink == nullptr) {
+        return;
+    }
+
+    fopAc_ac_c* rideActor = alink->getRideActor();
+    if (rideActor != nullptr &&
+        fopAcM_GetID(rideActor) == g_shieldSurfBoardId)
+    {
+        auto* board = static_cast<daObjIceLeaf_c*>(rideActor);
+        board->setMode(daObjIceLeaf_c::MODE_RIDE_e);
+        board->setAction(daObjIceLeaf_c::ACT_DEAD_e);
+        board->offRide();
+    }
+    alink->mRideAcKeep.clearData();
+    alink->mRideStatus = 0;
+    alink->offModeFlg(daAlink_c::MODE_RIDING);
+    alink->offNoResetFlg1(static_cast<daPy_py_c::daPy_FLG1>(0x1800));
+    alink->attention_info.field_0xa = 10;
+    alink->shape_angle.x = 0;
+    alink->shape_angle.z = 0;
+    delete_shield_surf_board();
+}
+
+void request_shield_surf_toggle(daAlink_c* alink) {
+    if (g_shieldSurfActive) {
+        g_shieldSurfDismountPending = true;
+        return;
+    }
+    if (g_shieldSurfStartPending) {
+        g_shieldSurfStartPending = false;
+        g_shieldSurfStartWaitFrames = 0;
+        delete_shield_surf_board();
+        svc_log->info(mod_ctx, "Shield Surf start canceled");
+        return;
+    }
+    if (alink == nullptr || alink->checkWolf() || alink->checkEventRun() ||
+        alink->checkRideOn() || !alink->mLinkAcch.ChkGroundHit())
+    {
+        svc_log->warn(mod_ctx, "Shield Surf requires Link on walkable ground and not riding");
+        return;
+    }
+    if (dComIfGs_getSelectEquipShield() == dItemNo_NONE_e ||
+        alink->mShieldModel == nullptr)
+    {
+        svc_log->warn(mod_ctx, "Shield Surf requires an equipped shield");
+        return;
+    }
+
+    g_shieldSurfStartPending = true;
+    g_shieldSurfStartWaitFrames = 0;
+    svc_log->info(mod_ctx, "Shield Surf start requested");
+}
+
+void process_shield_surf_transition(ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (alink == nullptr) {
+        return;
+    }
+
+    if (g_shieldSurfActive) {
+        if (!is_shield_surf_board_process(alink->mProcID)) {
+            release_shield_surf_player_state(alink);
+            g_shieldSurfActive = false;
+            g_shieldSurfDismountPending = false;
+            delete_shield_surf_board();
+            svc_log->info(mod_ctx, "Shield Surf ended when Link left the board process");
+            return;
+        }
+        if (g_shieldSurfDismountPending) {
+            g_shieldSurfDismountPending = false;
+            if (alink->checkBoardRide()) {
+                alink->setJumpMode();
+                alink->procBackJumpInit(0);
+            }
+        }
+        if (!alink->checkBoardRide()) {
+            g_shieldSurfActive = false;
+            delete_shield_surf_board();
+            svc_log->info(mod_ctx, "Shield Surf ended");
+        }
+        return;
+    }
+    if (!g_shieldSurfStartPending) {
+        return;
+    }
+    if (alink->checkWolf() || alink->checkEventRun() || alink->checkRideOn() ||
+        !alink->mLinkAcch.ChkGroundHit() ||
+        dComIfGs_getSelectEquipShield() == dItemNo_NONE_e ||
+        alink->mShieldModel == nullptr)
+    {
+        g_shieldSurfStartPending = false;
+        delete_shield_surf_board();
+        svc_log->warn(mod_ctx, "Shield Surf start canceled because Link is no longer ready");
+        return;
+    }
+
+    if (g_shieldSurfBoardId == fpcM_ERROR_PROCESS_ID_e) {
+        cXyz spawnPosition = alink->current.pos;
+        g_shieldSurfBoardId = fopAcM_create(
+            fpcNm_Obj_IceLeaf_e, 0x100FF, &spawnPosition,
+            fopAcM_GetRoomNo(alink), &alink->shape_angle, nullptr, -1);
+        if (g_shieldSurfBoardId == fpcM_ERROR_PROCESS_ID_e) {
+            g_shieldSurfStartPending = false;
+            svc_log->error(mod_ctx, "Failed to create the native Ice Leaf board actor");
+            return;
+        }
+        return;
+    }
+
+    auto* board = static_cast<daObjIceLeaf_c*>(
+        fopAcM_SearchByID(g_shieldSurfBoardId));
+    if (board != nullptr) {
+        board->setMode(daObjIceLeaf_c::MODE_RIDE_e);
+        board->setAction(daObjIceLeaf_c::ACT_DEAD_e);
+        board->current.pos = alink->current.pos;
+        board->shape_angle = alink->shape_angle;
+    }
+    if (board == nullptr || board->mpModel == nullptr) {
+        if (++g_shieldSurfStartWaitFrames >= 300) {
+            g_shieldSurfStartPending = false;
+            delete_shield_surf_board();
+            svc_log->error(mod_ctx, "Timed out loading the native Shield Surf board actor");
+        }
+        return;
+    }
+
+    board->setMode(daObjIceLeaf_c::MODE_RIDE_e);
+    board->setAction(daObjIceLeaf_c::ACT_DEAD_e);
+    if (!alink->procBoardWaitInit(board) || !alink->checkBoardRide()) {
+        g_shieldSurfStartPending = false;
+        delete_shield_surf_board();
+        svc_log->warn(mod_ctx, "The game rejected the Shield Surf board process");
+        return;
+    }
+
+    board->setBaseMtx();
+    g_shieldSurfStartPending = false;
+    g_shieldSurfActive = true;
+    svc_log->info(mod_ctx, "Shield Surf started using Link's equipped shield");
 }
 
 void update_secondary_assigned_item_input(ModContext*, void* args, void*, void*) {
@@ -4507,6 +4532,9 @@ void update_secondary_assigned_item_input(ModContext*, void* args, void*, void*)
         g_goronLavaContactFrames = 0;
         svc_log->info(mod_ctx, g_goronTunicEquipped ? "Goron Tunic equipped" :
                                                      "Goron Tunic unequipped");
+        break;
+    case kShieldSurfItemId:
+        request_shield_surf_toggle(alink);
         break;
     case kHawkGrassItem:
         begin_secondary_hawk_grass_use(alink, static_cast<u8>(button));
@@ -4566,8 +4594,7 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     control.kind = UI_CONTROL_DROPDOWN;
     control.label = "Music while sitting";
     control.help_rml =
-        "Choose a game music sequence to play while Link is seated. Default (Area Music) "
-        "leaves the intended area soundtrack playing. The area soundtrack resumes when Link "
+        "Play the File Select song while Link is seated. The area soundtrack resumes when Link "
         "stands or the Sit action ends.";
     control.binding = UI_BINDING_CONFIG_VAR;
     control.config_var = g_sitMusicTrack;
@@ -4623,6 +4650,19 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
         "When enabled, Hover Boots walk on water and no longer airwalk. Disabled by default.";
     control.binding = UI_BINDING_CONFIG_VAR;
     control.config_var = g_hoverBootsWaterWalking;
+    result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
+    if (result != MOD_OK) {
+        return result;
+    }
+
+    control = UI_CONTROL_DESC_INIT;
+    control.kind = UI_CONTROL_TOGGLE;
+    control.label = "Shield Surf R-button speed boost";
+    control.help_rml =
+        "While Shield Surfing, hold R to gradually accelerate to the vanilla Ice Leaf "
+        "maximum of 70 game units per frame and maintain that speed.";
+    control.binding = UI_BINDING_CONFIG_VAR;
+    control.config_var = g_shieldSurfRBoost;
     result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
     if (result != MOD_OK) {
         return result;
@@ -4986,6 +5026,108 @@ HookAction register_ice_arrow_hit(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+HookAction allow_shield_surf_on_any_ground(ModContext*, void* args, void* retval, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (g_shieldSurfActive && alink != nullptr && alink->checkBoardRide()) {
+        *static_cast<bool*>(retval) = true;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction suppress_player_shield_draw_during_surf(
+    ModContext*, void* args, void* retval, void*)
+{
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (g_shieldSurfActive && alink != nullptr && alink->checkBoardRide()) {
+        *static_cast<bool*>(retval) = false;
+        return HOOK_SKIP_ORIGINAL;
+    }
+    return HOOK_CONTINUE;
+}
+
+HookAction release_shield_surf_ride_safely(
+    ModContext*, void* args, void*, void*)
+{
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    if (!g_shieldSurfActive || alink == nullptr || !alink->checkBoardRide()) {
+        return HOOK_CONTINUE;
+    }
+
+    release_shield_surf_player_state(alink);
+    return HOOK_SKIP_ORIGINAL;
+}
+
+HookAction keep_shield_surf_board_in_ride_mode(
+    ModContext*, void* args, void*, void*)
+{
+    auto* board = mods::arg<daObjIceLeaf_c*>(args, 0);
+    if (board == nullptr || fopAcM_GetID(board) != g_shieldSurfBoardId) {
+        return HOOK_CONTINUE;
+    }
+
+    board->setMode(daObjIceLeaf_c::MODE_RIDE_e);
+    board->setAction(daObjIceLeaf_c::ACT_DEAD_e);
+    return HOOK_CONTINUE;
+}
+
+void boost_shield_surf_speed(ModContext*, void* args, void*, void*) {
+    auto* alink = mods::arg<daAlink_c*>(args, 0);
+    const BOOL canMove = mods::arg<BOOL>(args, 1);
+    if (!g_shieldSurfActive || !shieldSurfRBoostEnabled() || !canMove ||
+        alink == nullptr || !alink->checkBoardRide() ||
+        mDoCPd_c::getHoldR(PAD_1) == 0)
+    {
+        return;
+    }
+
+    cLib_chaseF(
+        &alink->mNormalSpeed,
+        alink->mMaxSpeed,
+        daAlinkHIO_board_c0::m.mPushAccel);
+}
+
+HookAction draw_shield_surf_on_native_board(
+    ModContext*, void* args, void* retval, void*)
+{
+    auto* board = mods::arg<daObjIceLeaf_c*>(args, 0);
+    if (board == nullptr || fopAcM_GetID(board) != g_shieldSurfBoardId) {
+        return HOOK_CONTINUE;
+    }
+
+    *static_cast<int*>(retval) = 1;
+    if (!g_shieldSurfActive || board->mpModel == nullptr) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    auto* alink = static_cast<daAlink_c*>(dComIfGp_getLinkPlayer());
+    if (alink == nullptr || !alink->checkBoardRide() ||
+        dComIfGs_getSelectEquipShield() == dItemNo_NONE_e ||
+        alink->mShieldModel == nullptr)
+    {
+        return HOOK_SKIP_ORIGINAL;
+    }
+
+    J3DModel* shield = alink->mShieldModel;
+    Mtx originalMatrix;
+    MTXCopy(shield->getBaseTRMtx(), originalMatrix);
+    mDoMtx_stack_c::copy(board->mpModel->getBaseTRMtx());
+    mDoMtx_stack_c::XrotM(0x4000);
+    mDoMtx_stack_c::ZrotM(0x8000);
+    Mtx surfMatrix;
+    MTXCopy(mDoMtx_stack_c::get(), surfMatrix);
+    surfMatrix[1][3] += kShieldSurfBoardRaise;
+    shield->setBaseTRMtx(surfMatrix);
+
+    dKy_tevstr_c tevStr{};
+    g_env_light.settingTevStruct(0, &board->current.pos, &tevStr);
+    g_env_light.setLightTevColorType_MAJI(shield, &tevStr);
+    mDoExt_modelUpdateDL(shield);
+
+    shield->setBaseTRMtx(originalMatrix);
+    return HOOK_SKIP_ORIGINAL;
+}
+
 HookAction freeze_ice_arrow_target_animation(ModContext*, void* args, void*, void*) {
     auto* morf = mods::arg<mDoExt_morf_c*>(args, 0);
     if (morf == nullptr) {
@@ -5065,6 +5207,10 @@ DEFINE_HOOK(&dMeter2Info_readItemTexture, ReadItemTexture);
 DEFINE_HOOK(&daAlink_c::setWaterY, SetWaterY);
 DEFINE_HOOK(&daAlink_c::setRoomInfo, SetRoomInfo);
 DEFINE_HOOK(&daAlink_c::setStickData, SetStickData);
+DEFINE_HOOK(&daAlink_c::boardCommon, BoardCommon);
+DEFINE_HOOK(&daAlink_c::checkSnowCode, CheckSnowCode);
+DEFINE_HOOK(&daAlink_c::checkShieldDraw, CheckShieldDraw);
+DEFINE_HOOK(&daAlink_c::rideGetOff, RideGetOff);
 DEFINE_HOOK(&daAlink_c::checkWaitAction, CheckWaitAction);
 DEFINE_HOOK(&daAlink_c::procDamageInit, ProcDamageInit);
 DEFINE_HOOK(&daAlink_c::procCoLargeDamageInit, ProcCoLargeDamageInit);
@@ -5109,6 +5255,8 @@ DEFINE_HOOK(&daAlink_c::checkRestartRoom, CheckRestartRoom);
 DEFINE_HOOK(&daAlink_c::procCoLavaReturnInit, ProcCoLavaReturnInit);
 DEFINE_HOOK(&daAlink_c::checkSceneChange, CheckSceneChange);
 DEFINE_HOOK(&daAlink_c::execute, PlayerExecute);
+DEFINE_HOOK(&daObjIceLeaf_c::execute, IceLeafExecute);
+DEFINE_HOOK(&daObjIceLeaf_c::draw, IceLeafDraw);
 DEFINE_HOOK(&daAlink_c::draw, PlayerDraw);
 DEFINE_HOOK(&daAlink_c::makeArrow, MakeArrow);
 DEFINE_HOOK(&daAlink_c::changeArrowType, ChangeArrowType);
@@ -5178,6 +5326,9 @@ ModResult install_hooks() {
     ADD_PRE(SetHeavyBoots, handle_hover_boots_heavy_toggle);
     ADD_POST(SetStickData, update_secondary_assigned_item_input);
     ADD_POST(SetStickData, suppress_sit_stick_input);
+    ADD_PRE(CheckSnowCode, allow_shield_surf_on_any_ground);
+    ADD_PRE(CheckShieldDraw, suppress_player_shield_draw_during_surf);
+    ADD_PRE(RideGetOff, release_shield_surf_ride_safely);
     ADD_PRE(CheckWaitAction, preserve_sit_idle_animation);
     ADD_POST(HawkGrassVoiceStart, spawn_hawk_after_grass_sound);
     ADD_PRE(RingMove, handle_secondary_ring_move);
@@ -5203,6 +5354,10 @@ ModResult install_hooks() {
     ADD_POST(MapShow, end_map_input);
     ADD_PRE(CheckRestartRoom, prevent_lava_return);
     ADD_PRE(PlayerExecute, update_ice_arrow_freezes);
+    ADD_POST(PlayerExecute, process_shield_surf_transition);
+    ADD_POST(BoardCommon, boost_shield_surf_speed);
+    ADD_PRE(IceLeafExecute, keep_shield_surf_board_in_ride_mode);
+    ADD_PRE(IceLeafDraw, draw_shield_surf_on_native_board);
     ADD_POST(MakeArrow, set_ice_arrow_actor_type_after_creation);
     ADD_POST(ArrowDraw, draw_ice_keese_on_held_arrow);
     ADD_PRE(ChangeArrowType, apply_ice_arrow_bow_selection);
@@ -5244,10 +5399,18 @@ extern "C" {
 MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_darkLinkFormActive = false;
     g_darkLinkFormBlend = 0.0f;
+    g_shieldSurfActive = false;
+    g_shieldSurfStartPending = false;
+    g_shieldSurfDismountPending = false;
+    g_shieldSurfBoardId = fpcM_ERROR_PROCESS_ID_e;
+    g_shieldSurfStartWaitFrames = 0;
     g_iceArrowSelected = false;
     g_iceArrowFrozenTargets.fill({});
     g_sitActionState = SitActionState::Inactive;
     g_sitMusicActiveTrack = 0;
+    g_sitMusicAreaFadePending = false;
+    g_sitMusicAreaFadeFrames = 0;
+    g_sitMusicAreaFadeTimeoutReported = false;
     g_sitMusicLastStartedTrack = 0;
     g_sitMusicReportedOverrideTrack = 0;
     g_sitMusicLastLoggedSelection = -1;
@@ -5312,6 +5475,16 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
 
     config = CONFIG_VAR_DESC_INIT;
+    config.name = "shieldSurfRBoost";
+    config.type = CONFIG_VAR_BOOL;
+    config.default_bool = false;
+    result = svc_config->register_var(mod_ctx, &config, &g_shieldSurfRBoost);
+    if (result != MOD_OK) {
+        svc_log->error(mod_ctx, "failed to register Shield Surf R-button speed boost setting");
+        return result;
+    }
+
+    config = CONFIG_VAR_DESC_INIT;
     config.name = "rupeeMagnetEnabled";
     config.type = CONFIG_VAR_BOOL;
     config.default_bool = false;
@@ -5346,10 +5519,8 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         svc_log->error(mod_ctx, "failed to read Sit music setting");
         return result;
     }
-    if (sitMusicTrack < 0 ||
-        sitMusicTrack >= static_cast<int64_t>(kSitMusicOptionCount))
-    {
-        svc_log->warn(mod_ctx, "reset invalid Sit music selection to area music");
+    if (sitMusicTrack != 0) {
+        svc_log->warn(mod_ctx, "reset legacy Sit music selection to File Select");
         result = svc_config->set_int(mod_ctx, g_sitMusicTrack, 0);
         if (result != MOD_OK) {
             svc_log->error(mod_ctx, "failed to reset invalid Sit music selection");
