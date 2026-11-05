@@ -55,6 +55,7 @@
 
 #include <dolphin/os.h>
 #include <dolphin/pad.h>
+#include <aurora/aurora.h>
 
 #include <algorithm>
 #include <array>
@@ -81,6 +82,9 @@ constexpr int64_t kManualJumpDefaultBinding = 1;
 constexpr int64_t kManualJumpDefaultHeightPercent = 100;
 constexpr int64_t kManualJumpMinHeightPercent = 100;
 constexpr int64_t kManualJumpMaxHeightPercent = 300;
+constexpr int64_t kGlideBowSlowTimeDefaultPercent = 0;
+constexpr int64_t kGlideBowSlowTimeMinPercent = 0;
+constexpr int64_t kGlideBowSlowTimeMaxPercent = 100;
 constexpr int64_t kHoverPlaneLowerDefaultBinding = 5;
 constexpr u8 kShieldSurfSlot = 0xFC;
 constexpr u8 kSitSlot = 0xFD;
@@ -165,6 +169,7 @@ enum class SitActionState : u8 {
 ConfigVarHandle g_wheelOpenDirection = 0;
 ConfigVarHandle g_manualJumpBinding = 0;
 ConfigVarHandle g_manualJumpHeightPercent = 0;
+ConfigVarHandle g_glideBowSlowTimePercent = 0;
 ConfigVarHandle g_hoverPlaneLowerBinding = 0;
 ConfigVarHandle g_infiniteLavaWalk = 0;
 ConfigVarHandle g_twilightWard = 0;
@@ -216,6 +221,8 @@ bool g_manualGlideBowAiming = false;
 f32 g_manualGlideBowMoveValue = 0.0f;
 s16 g_manualGlideBowBodyAngleY = 0;
 bool g_manualGlideArrowAimStatusAdded = false;
+bool g_manualGlideSlowTimeScaleActive = false;
+f32 g_manualGlidePreviousTimeScale = 1.0f;
 u32 g_manualGlideAuraEmitters[2][3] = {};
 bool g_darkLinkFormActive = false;
 SitActionState g_sitActionState = SitActionState::Inactive;
@@ -262,6 +269,7 @@ bool g_iceArrowSelected = false;
 bool g_secondaryItemInputHandled = false;
 bool g_manualJumpConfigReadFailureReported = false;
 bool g_manualJumpHeightConfigReadFailureReported = false;
+bool g_glideBowSlowTimeConfigReadFailureReported = false;
 bool g_hoverPlaneLowerBindingConfigReadFailureReported = false;
 bool g_hoverPlaneLowerBindingWasHeld = false;
 bool g_hoverGroundHeightValid = false;
@@ -487,6 +495,8 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_manualGlideBowMoveValue = 0.0f;
     g_manualGlideBowBodyAngleY = 0;
     g_manualGlideArrowAimStatusAdded = false;
+    g_manualGlideSlowTimeScaleActive = false;
+    g_manualGlidePreviousTimeScale = 1.0f;
     g_manualJumpPendingR = false;
     stop_manual_glide_aura();
     g_iceArrowSelected = false;
@@ -509,6 +519,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     g_secondaryItemInputHandled = false;
     g_manualJumpConfigReadFailureReported = false;
     g_manualJumpHeightConfigReadFailureReported = false;
+    g_glideBowSlowTimeConfigReadFailureReported = false;
     g_hoverPlaneLowerBindingConfigReadFailureReported = false;
     g_hoverPlaneLowerBindingWasHeld = false;
     g_secondaryRingInterpolationErrorLogged = false;
@@ -540,6 +551,16 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     result = svc_config->register_var(mod_ctx, &config, &g_manualJumpHeightPercent);
     if (result != MOD_OK) {
         svc_log->error(mod_ctx, "failed to register manual jump height setting");
+        return result;
+    }
+
+    config = CONFIG_VAR_DESC_INIT;
+    config.name = "glideBowSlowTimePercent";
+    config.type = CONFIG_VAR_INT;
+    config.default_int = kGlideBowSlowTimeDefaultPercent;
+    result = svc_config->register_var(mod_ctx, &config, &g_glideBowSlowTimePercent);
+    if (result != MOD_OK) {
+        svc_log->error(mod_ctx, "failed to register glide bow slow time setting");
         return result;
     }
 
@@ -658,6 +679,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
     UiModsPanelDesc panel = UI_MODS_PANEL_DESC_INIT;
     panel.build = build_panel;
+    panel.update = update_glide_bow_slow_time_setting;
     result = svc_ui->register_mods_panel(mod_ctx, &panel);
     if (result != MOD_OK) {
         svc_log->error(mod_ctx, "failed to register the secondary wheel settings panel");
@@ -699,6 +721,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     update_hover_boots();
     update_manual_cucco_glide(
         static_cast<daAlink_c*>(dComIfGp_getLinkPlayer()));
+    update_manual_glide_bow_slow_time();
     update_hawk_grass_resource();
     update_ice_keese_resource();
     update_spawned_hawk_cleanup();
@@ -716,6 +739,7 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     }
     g_manualCuccoGlideActive = false;
     stop_manual_glide_aura();
+    restore_manual_glide_bow_slow_time();
     if (g_secondarySaveObserver != 0) {
         const ModResult result =
             svc_save->unobserve_saves(mod_ctx, g_secondarySaveObserver);

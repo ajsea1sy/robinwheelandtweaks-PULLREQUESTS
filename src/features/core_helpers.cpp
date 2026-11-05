@@ -37,6 +37,23 @@ int64_t manualJumpHeightPercent() {
     return std::clamp(value, kManualJumpMinHeightPercent, kManualJumpMaxHeightPercent);
 }
 
+int64_t glideBowSlowTimePercent() {
+    int64_t value = kGlideBowSlowTimeDefaultPercent;
+    if (g_glideBowSlowTimePercent == 0 ||
+        svc_config->get_int(mod_ctx, g_glideBowSlowTimePercent, &value) != MOD_OK)
+    {
+        if (!g_glideBowSlowTimeConfigReadFailureReported) {
+            svc_log->warn(mod_ctx, "could not read glide bow slow time config");
+            g_glideBowSlowTimeConfigReadFailureReported = true;
+        }
+        return kGlideBowSlowTimeDefaultPercent;
+    }
+
+    g_glideBowSlowTimeConfigReadFailureReported = false;
+    return std::clamp(
+        value, kGlideBowSlowTimeMinPercent, kGlideBowSlowTimeMaxPercent);
+}
+
 int64_t hoverPlaneLowerBinding() {
     int64_t value = kHoverPlaneLowerDefaultBinding;
     if (g_hoverPlaneLowerBinding == 0 ||

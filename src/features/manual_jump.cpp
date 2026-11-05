@@ -31,6 +31,8 @@ bool start_manual_cucco_glide(daAlink_c* alink) {
     return true;
 }
 
+void restore_manual_glide_bow_slow_time();
+
 void clear_manual_glide_bow_aim(daAlink_c* alink) {
     if (!g_manualGlideBowAiming) {
         return;
@@ -42,6 +44,7 @@ void clear_manual_glide_bow_aim(daAlink_c* alink) {
     }
     dComIfGp_clearPlayerStatus0(0, 0x2000);
     g_manualGlideBowAiming = false;
+    restore_manual_glide_bow_slow_time();
     if (alink != nullptr) {
         alink->setBowSight();
     }
@@ -194,6 +197,36 @@ void update_manual_cucco_glide(daAlink_c* alink) {
     {
         g_manualCuccoGlideActive = false;
         clear_manual_glide_bow_aim(alink);
+    }
+}
+
+void update_manual_glide_bow_slow_time() {
+    if (!g_manualCuccoGlideActive || !g_manualGlideBowAiming) {
+        restore_manual_glide_bow_slow_time();
+        return;
+    }
+
+    const int64_t slowdownPercent = glideBowSlowTimePercent();
+    if (slowdownPercent == 0) {
+        restore_manual_glide_bow_slow_time();
+        return;
+    }
+
+    if (!g_manualGlideSlowTimeScaleActive) {
+        g_manualGlidePreviousTimeScale = aurora_get_timescale();
+        g_manualGlideSlowTimeScaleActive = true;
+    }
+
+    const f32 timeScale =
+        g_manualGlidePreviousTimeScale *
+        (1.0f - static_cast<f32>(slowdownPercent) / 100.0f);
+    aurora_set_timescale(timeScale);
+}
+
+void restore_manual_glide_bow_slow_time() {
+    if (g_manualGlideSlowTimeScaleActive) {
+        aurora_set_timescale(g_manualGlidePreviousTimeScale);
+        g_manualGlideSlowTimeScaleActive = false;
     }
 }
 

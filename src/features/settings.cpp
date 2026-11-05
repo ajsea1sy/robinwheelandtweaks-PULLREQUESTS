@@ -58,6 +58,24 @@ ModResult build_panel(ModContext*, UiElementHandle panel, void*, ModError*) {
     }
 
     control = UI_CONTROL_DESC_INIT;
+    control.kind = UI_CONTROL_NUMBER;
+    control.label = "Glide bow slow time";
+    control.help_rml =
+        "Scale the game's simulation while aiming a bow during a manual glide, affecting Link "
+        "and the world together. Dusklight frame interpolation smooths movement when enabled. "
+        "At 100%, simulation pauses; lower this setting in the Mods panel to resume.";
+    control.binding = UI_BINDING_CONFIG_VAR;
+    control.config_var = g_glideBowSlowTimePercent;
+    control.min = kGlideBowSlowTimeMinPercent;
+    control.max = kGlideBowSlowTimeMaxPercent;
+    control.step = 1;
+    control.suffix = "%";
+    result = svc_ui->pane_add_control(mod_ctx, panel, &control, nullptr);
+    if (result != MOD_OK) {
+        return result;
+    }
+
+    control = UI_CONTROL_DESC_INIT;
     control.kind = UI_CONTROL_DROPDOWN;
     control.label = "Music while sitting";
     control.help_rml =
@@ -183,6 +201,11 @@ ModResult build_robin_settings_tab(
     return build_panel(ctx, left_pane, user_data, error);
 }
 
+ModResult update_glide_bow_slow_time_setting(ModContext*, void*, ModError*) {
+    update_manual_glide_bow_slow_time();
+    return MOD_OK;
+}
+
 void on_robin_settings_window_closed(ModContext*, UiWindowHandle, void*) {
     g_robinSettingsWindow = 0;
 }
@@ -195,6 +218,7 @@ void open_robin_settings_window(ModContext* ctx, void*) {
     UiTabDesc tabs[] = {UI_TAB_DESC_INIT};
     tabs[0].title = "Settings";
     tabs[0].build = build_robin_settings_tab;
+    tabs[0].update = update_glide_bow_slow_time_setting;
 
     UiWindowDesc desc = UI_WINDOW_DESC_INIT;
     desc.tabs = tabs;
