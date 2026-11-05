@@ -152,7 +152,7 @@ bool try_manual_jump(daAlink_c* alink) {
         break;
     case 4:
         buttonMask = daAlink_c::BTN_R;
-        triggered = mDoCPd_c::getTrigR(PAD_1) != 0;
+        triggered = mDoCPd_c::getTrigLockR(PAD_1) != 0;
         break;
     case 5:
         buttonMask = daAlink_c::BTN_Z;
